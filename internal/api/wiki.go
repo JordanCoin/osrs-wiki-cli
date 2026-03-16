@@ -255,7 +255,7 @@ func (c *Client) GetItem(itemName string) (*ItemInfo, error) {
 			return &item, nil
 		}
 	}
-	return nil, fmt.Errorf("item '%s' not found. Try 'osrs-wiki search %s'", itemName, itemName)
+	return nil, fmt.Errorf("item '%s' not found in the Grand Exchange (only tradeable items). For bosses, quests, or game info, use: osrs-wiki wiki '%s'", itemName, itemName)
 }
 
 // Cached mapping

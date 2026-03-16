@@ -1,0 +1,306 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+type Client struct {
+	HTTPClient *http.Client
+}
+
+func NewClient() *Client {
+	return &Client{
+		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// ImageResult holds the resolved image URL for an item.
+type ImageResult struct {
+	Title        string `json:"title"`
+	ImageURL     string `json:"image_url"`
+	FullURL      string `json:"full_url,omitempty"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	PageImageName string `json:"page_image,omitempty"`
+}
+
+// GetImage looks up the correct wiki thumbnail URL for an item.
+// Uses the MediaWiki pageimages API — always returns the correct URL.
+func (c *Client) GetImage(itemName string, size int) (*ImageResult, error) {
+	if size <= 0 {
+		size = 150
+	}
+
+	// Try original name first, then wiki-normalized version.
+	// OSRS Wiki uses "Twisted bow" not "Twisted Bow" — only first letter capitalized.
+	// redirects=1 handles some cases but not all.
+	result, err := c.tryGetImage(itemName, size)
+	if err != nil {
+		// Retry with wiki-style capitalization: "Twisted Bow" → "Twisted bow"
+		wikiName := wikiCapitalize(itemName)
+		if wikiName != itemName {
+			result, err = c.tryGetImage(wikiName, size)
+		}
+	}
+	return result, err
+}
+
+// wikiCapitalize converts "Twisted Bow" → "Twisted bow" (only first letter uppercase).
+func wikiCapitalize(name string) string {
+	if len(name) == 0 {
+		return name
+	}
+	return strings.ToUpper(name[:1]) + strings.ToLower(name[1:])
+}
+
+func (c *Client) tryGetImage(itemName string, size int) (*ImageResult, error) {
+	apiURL := fmt.Sprintf(
+		"https://oldschool.runescape.wiki/api.php?action=query&titles=%s&prop=pageimages&format=json&pithumbsize=%d&redirects=1",
+		url.QueryEscape(itemName), size,
+	)
+
+	data, err := c.get(apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Query struct {
+			Pages map[string]struct {
+				Title     string `json:"title"`
+				Thumbnail struct {
+					Source string `json:"source"`
+					Width  int    `json:"width"`
+					Height int    `json:"height"`
+				} `json:"thumbnail"`
+				PageImage string `json:"pageimage"`
+			} `json:"pages"`
+		} `json:"query"`
+	}
+
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("invalid response: %w", err)
+	}
+
+	for _, page := range resp.Query.Pages {
+		if page.Thumbnail.Source != "" {
+			// Build full-size URL by removing the /thumb/ and size prefix
+			fullURL := page.Thumbnail.Source
+			if idx := strings.Index(fullURL, "/thumb/"); idx != -1 {
+				// Remove /thumb/ and the trailing /150px-... part
+				withoutThumb := strings.Replace(fullURL, "/thumb/", "/", 1)
+				if lastSlash := strings.LastIndex(withoutThumb, "/"); lastSlash != -1 {
+					fullURL = withoutThumb[:lastSlash]
+				}
+			}
+
+			return &ImageResult{
+				Title:         page.Title,
+				ImageURL:      page.Thumbnail.Source,
+				FullURL:       fullURL,
+				Width:         page.Thumbnail.Width,
+				Height:        page.Thumbnail.Height,
+				PageImageName: page.PageImage,
+			}, nil
+		}
+		// Page exists but no image
+		return nil, fmt.Errorf("no image found for '%s'. The wiki page exists but has no thumbnail", itemName)
+	}
+
+	return nil, fmt.Errorf("item '%s' not found on the OSRS Wiki. Check the spelling or try 'osrs-wiki search %s'", itemName, itemName)
+}
+
+// SearchResult holds an item from opensearch.
+type SearchResult struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// Search finds items by partial name using opensearch.
+func (c *Client) Search(query string, limit int) ([]SearchResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	apiURL := fmt.Sprintf(
+		"https://oldschool.runescape.wiki/api.php?action=opensearch&search=%s&limit=%d&format=json",
+		url.QueryEscape(query), limit,
+	)
+
+	data, err := c.get(apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// opensearch returns [query, [titles], [descriptions], [urls]]
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("invalid response: %w", err)
+	}
+	if len(raw) < 4 {
+		return nil, fmt.Errorf("unexpected response format")
+	}
+
+	var titles []string
+	var urls []string
+	json.Unmarshal(raw[1], &titles)
+	json.Unmarshal(raw[3], &urls)
+
+	var results []SearchResult
+	for i := range titles {
+		u := ""
+		if i < len(urls) {
+			u = urls[i]
+		}
+		results = append(results, SearchResult{Title: titles[i], URL: u})
+	}
+	return results, nil
+}
+
+// PriceResult holds GE price data.
+type PriceResult struct {
+	ItemID   int    `json:"item_id"`
+	Name     string `json:"name"`
+	High     int64  `json:"high"`
+	Low      int64  `json:"low"`
+	HighTime int64  `json:"high_time"`
+	LowTime  int64  `json:"low_time"`
+}
+
+// GetPrice looks up the Grand Exchange price for an item by name.
+// First resolves name → item ID via the mapping API, then gets price.
+func (c *Client) GetPrice(itemName string) (*PriceResult, error) {
+	// Load item mapping to find the ID
+	mapping, err := c.getItemMapping()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load item mapping: %w", err)
+	}
+
+	nameLower := strings.ToLower(itemName)
+	var itemID int
+	var foundName string
+	for _, item := range mapping {
+		if strings.ToLower(item.Name) == nameLower {
+			itemID = item.ID
+			foundName = item.Name
+			break
+		}
+	}
+	if itemID == 0 {
+		return nil, fmt.Errorf("item '%s' not found in GE. Try 'osrs-wiki search %s'", itemName, itemName)
+	}
+
+	// Get price
+	priceURL := fmt.Sprintf("https://prices.runescape.wiki/api/v1/osrs/latest?id=%d", itemID)
+	data, err := c.getWithUserAgent(priceURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var priceResp struct {
+		Data map[string]struct {
+			High     int64 `json:"high"`
+			Low      int64 `json:"low"`
+			HighTime int64 `json:"highTime"`
+			LowTime  int64 `json:"lowTime"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(data, &priceResp); err != nil {
+		return nil, fmt.Errorf("invalid price response: %w", err)
+	}
+
+	idStr := fmt.Sprintf("%d", itemID)
+	if p, ok := priceResp.Data[idStr]; ok {
+		return &PriceResult{
+			ItemID:   itemID,
+			Name:     foundName,
+			High:     p.High,
+			Low:      p.Low,
+			HighTime: p.HighTime,
+			LowTime:  p.LowTime,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no price data available for '%s'", foundName)
+}
+
+// ItemInfo holds basic item info from the mapping.
+type ItemInfo struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Examine  string `json:"examine"`
+	Members  bool   `json:"members"`
+	HighAlch int    `json:"highalch"`
+	LowAlch  int    `json:"lowalch"`
+	Value    int    `json:"value"`
+	Icon     string `json:"icon"`
+}
+
+// GetItem looks up item details from the mapping.
+func (c *Client) GetItem(itemName string) (*ItemInfo, error) {
+	mapping, err := c.getItemMapping()
+	if err != nil {
+		return nil, err
+	}
+
+	nameLower := strings.ToLower(itemName)
+	for _, item := range mapping {
+		if strings.ToLower(item.Name) == nameLower {
+			return &item, nil
+		}
+	}
+	return nil, fmt.Errorf("item '%s' not found. Try 'osrs-wiki search %s'", itemName, itemName)
+}
+
+// Cached mapping
+var cachedMapping []ItemInfo
+
+func (c *Client) getItemMapping() ([]ItemInfo, error) {
+	if cachedMapping != nil {
+		return cachedMapping, nil
+	}
+
+	data, err := c.getWithUserAgent("https://prices.runescape.wiki/api/v1/osrs/mapping")
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(data, &cachedMapping); err != nil {
+		return nil, fmt.Errorf("invalid mapping response: %w", err)
+	}
+	return cachedMapping, nil
+}
+
+func (c *Client) get(url string) ([]byte, error) {
+	resp, err := c.HTTPClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))
+	}
+	return data, nil
+}
+
+func (c *Client) getWithUserAgent(reqURL string) ([]byte, error) {
+	req, _ := http.NewRequest("GET", reqURL, nil)
+	req.Header.Set("User-Agent", "osrs-wiki-cli (github.com/JordanCoin/osrs-wiki-cli)")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))
+	}
+	return data, nil
+}

@@ -277,6 +277,94 @@ func (c *Client) getItemMapping() ([]ItemInfo, error) {
 	return cachedMapping, nil
 }
 
+// PageContent holds wiki page text content.
+type PageContent struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	URL     string `json:"url"`
+}
+
+// GetPage fetches the text content of a wiki page.
+// Returns clean plaintext (no HTML). maxChars limits the response size.
+func (c *Client) GetPage(title string, maxChars int) (*PageContent, error) {
+	if maxChars <= 0 {
+		maxChars = 4000
+	}
+
+	apiURL := fmt.Sprintf(
+		"https://oldschool.runescape.wiki/api.php?action=query&titles=%s&prop=extracts&format=json&redirects=1&exchars=%d&explaintext=1",
+		url.QueryEscape(title), maxChars,
+	)
+
+	data, err := c.get(apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Query struct {
+			Pages map[string]struct {
+				PageID  int    `json:"pageid"`
+				Title   string `json:"title"`
+				Extract string `json:"extract"`
+				Missing bool   `json:"missing"`
+			} `json:"pages"`
+		} `json:"query"`
+	}
+
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("invalid response: %w", err)
+	}
+
+	for _, page := range resp.Query.Pages {
+		if page.Missing || page.Extract == "" {
+			// Try wiki-capitalized version
+			wikiTitle := wikiCapitalize(title)
+			if wikiTitle != title {
+				return c.getPageDirect(wikiTitle, maxChars)
+			}
+			return nil, fmt.Errorf("page '%s' not found on OSRS Wiki. Try 'osrs-wiki search %s'", title, title)
+		}
+		wikiURL := "https://oldschool.runescape.wiki/w/" + strings.ReplaceAll(page.Title, " ", "_")
+		return &PageContent{
+			Title:   page.Title,
+			Content: page.Extract,
+			URL:     wikiURL,
+		}, nil
+	}
+	return nil, fmt.Errorf("page '%s' not found", title)
+}
+
+func (c *Client) getPageDirect(title string, maxChars int) (*PageContent, error) {
+	apiURL := fmt.Sprintf(
+		"https://oldschool.runescape.wiki/api.php?action=query&titles=%s&prop=extracts&format=json&redirects=1&exchars=%d&explaintext=1",
+		url.QueryEscape(title), maxChars,
+	)
+	data, err := c.get(apiURL)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Query struct {
+			Pages map[string]struct {
+				Title   string `json:"title"`
+				Extract string `json:"extract"`
+			} `json:"pages"`
+		} `json:"query"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	for _, page := range resp.Query.Pages {
+		if page.Extract == "" {
+			return nil, fmt.Errorf("page '%s' not found", title)
+		}
+		wikiURL := "https://oldschool.runescape.wiki/w/" + strings.ReplaceAll(page.Title, " ", "_")
+		return &PageContent{Title: page.Title, Content: page.Extract, URL: wikiURL}, nil
+	}
+	return nil, fmt.Errorf("page '%s' not found", title)
+}
+
 func (c *Client) get(url string) ([]byte, error) {
 	resp, err := c.HTTPClient.Get(url)
 	if err != nil {

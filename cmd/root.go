@@ -24,6 +24,8 @@ func init() {
 	rootCmd.AddCommand(priceCmd)
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(itemCmd)
+	rootCmd.AddCommand(wikiCmd)
+	rootCmd.AddCommand(guideCmd)
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version",

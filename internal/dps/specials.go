@@ -236,6 +236,59 @@ func ApplyNPCTransform(damage float64, monster *data.Monster, style CombatStyle,
 		}
 	}
 
+	// Kraken + ranged: /7
+	if (strings.Contains(name, "Kraken") || strings.Contains(name, "Cave kraken")) && style == StyleRanged {
+		damage /= 7
+		if damage < 1 && damage > 0 {
+			damage = 1
+		}
+	}
+
+	// Ice Demon + non-fire non-demonbane: /3
+	if ContainsID(IceDemonIDs, monster.ID) && style != StyleMagic {
+		damage /= 3
+	}
+
+	// Nightmare totems + magic: *2
+	if ContainsID(NightmareTotemIDs, monster.ID) && style == StyleMagic {
+		damage *= 2
+	}
+
+	// Abyssal Sire transition: /2
+	if ContainsID(AbyssalSireTransitionIDs, monster.ID) {
+		damage /= 2
+	}
+
+	// Tormented Demon shielded: *4/5
+	if ContainsID(TormentedDemonIDs, monster.ID) &&
+		(monster.Version == "Shielded" || monster.Version == "Shielded (Defenceless)") {
+		damage = damage * 4 / 5
+		if damage < 1 {
+			damage = 1
+		}
+	}
+
+	// Slagilith + non-pickaxe melee: /3
+	if strings.Contains(name, "Slagilith") && style != StyleMagic {
+		if weapon != nil && !strings.Contains(weapon.Name, "pickaxe") {
+			damage /= 3
+		}
+	}
+
+	// Hueycoatl tail
+	if ContainsID(HueycoatlTailIDs, monster.ID) {
+		if style == StyleCrush {
+			damage = damage * 9 / 10 // linearMin approximation
+		} else {
+			damage = damage * 4 / 10 // linearMin(4) approximation
+		}
+	}
+
+	// Hueycoatl head/tail with Pillar phase: *13/10
+	if ContainsID(HueycoatlPhaseIDs, monster.ID) && monster.Version == "With Pillar" {
+		damage = damage * 13 / 10
+	}
+
 	// Flat armour (non-magic)
 	if monster.Defensive.FlatArmour > 0 && style != StyleMagic {
 		damage -= float64(monster.Defensive.FlatArmour)

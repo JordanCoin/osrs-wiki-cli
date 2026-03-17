@@ -200,61 +200,146 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 	defRoll := ctx.getNPCDefenceRoll()
 
 	// ToA defence scaling
-	if IsToAMonster(monster.ID) && !IsKephriOverlord(monster.ID) {
-		// Default invocation level 150 if not specified
+	if IsToAMonster(ctx.Monster.ID) && !IsKephriOverlord(ctx.Monster.ID) {
 		defRoll = ScaleToADefenceRoll(defRoll, 150)
 	}
 
-	// ── Step 3: Accuracy ───────────────────────────────────────────
+	// ── Step 3: Post-roll accuracy/damage modifiers ────────────────
+
+	// Soulreaper axe: 5 stacks = +30% accuracy and damage
+	if ctx.wearing("Soulreaper axe") {
+		stacks := 5
+		soulFactor := Factor{100 + 6*stacks, 100}
+		atkRoll = ApplyFactor(atkRoll, soulFactor)
+	}
+
+	// Special attack accuracy modifiers
+	if ctx.Gear.UseSpec {
+		spec := GetSpecialAttackMod(weapon.Name)
+		if spec != nil && spec.AccFactor[0] != 0 && spec.AccFactor != (Factor{1, 1}) {
+			atkRoll = ApplyFactor(atkRoll, spec.AccFactor)
+		}
+	}
+
+	// ── Step 4: Accuracy ───────────────────────────────────────────
 	accuracy := getNormalAccuracyRoll(atkRoll, defRoll)
 
 	// Guaranteed accuracy monsters
-	if ContainsID(GuaranteedAccuracyMonsters, monster.ID) {
+	if ContainsID(GuaranteedAccuracyMonsters, ctx.Monster.ID) {
 		accuracy = 1.0
 	}
 
 	// P2 Wardens: always 100% accuracy
-	if ContainsID(P2WardenIDs, monster.ID) {
+	if ContainsID(P2WardenIDs, ctx.Monster.ID) {
 		accuracy = 1.0
 	}
 
-	// Fang accuracy override (stab style, non-ToA)
-	if ctx.isWearingFang() && style == StyleStab {
-		if IsToAMonster(monster.ID) {
-			// In ToA: 1 - (1-accuracy)^2
+	// Voidwaker / Dawnbringer spec: 100% accuracy
+	if ctx.Gear.UseSpec && (ctx.wearing("Voidwaker") || ctx.wearing("Dawnbringer")) {
+		accuracy = 1.0
+	}
+
+	// Fang accuracy override (stab style)
+	if ctx.isWearingFang() && style == StyleStab && !ctx.Gear.UseSpec {
+		if IsToAMonster(ctx.Monster.ID) {
 			accuracy = 1.0 - (1.0-accuracy)*(1.0-accuracy)
 		} else {
 			accuracy = getFangAccuracyRoll(atkRoll, defRoll)
 		}
 	}
 
-	// ── Step 4: Max hit ────────────────────────────────────────────
-	minHit, maxHit := ctx.getPlayerMaxHit()
-
-	// Soulreaper axe: 5 stacks = +30% accuracy and damage
-	if ctx.wearing("Soulreaper axe") {
-		stacks := 5 // assume max stacks for DPS calc
-		soulFactor := Factor{100 + 6*stacks, 100}
-		maxHit = ApplyFactor(maxHit, soulFactor)
-		atkRoll = ApplyFactor(atkRoll, soulFactor)
-		accuracy = getNormalAccuracyRoll(atkRoll, defRoll)
+	// Brimstone ring + magic
+	if style == StyleMagic && ctx.wearing("Brimstone ring") {
+		reducedDefRoll := defRoll * 9 / 10
+		reducedAcc := getNormalAccuracyRoll(atkRoll, reducedDefRoll)
+		accuracy = 0.75*accuracy + 0.25*reducedAcc
 	}
 
-	// Rev weapon buff (wilderness, charged)
-	if ctx.isRevWeaponApplicable() {
-		revFactor := RevWeaponFactor()
-		maxHit = ApplyFactor(maxHit, revFactor)
-		atkRoll = ApplyFactor(atkRoll, revFactor)
-		// Recalculate accuracy with boosted attack roll
-		accuracy = getNormalAccuracyRoll(atkRoll, defRoll)
+	// Titan Elemental magic accuracy
+	if ContainsID(TitanElementalIDs, ctx.Monster.ID) && style == StyleMagic {
+		magicOffBonus := ctx.Bonuses.MagicAtk
+		if magicOffBonus < 0 {
+			magicOffBonus = 0
+		}
+		accuracy = float64(magicOffBonus)/100.0 + 0.3
+		if accuracy > 1.0 {
+			accuracy = 1.0
+		}
+		if ctx.isWearingMagicVoid() {
+			accuracy = accuracy * 1.45
+			if accuracy > 1.0 {
+				accuracy = 1.0
+			}
+		}
+	}
+
+	// ── Step 5: Max hit ────────────────────────────────────────────
+	minHit, maxHit := ctx.getPlayerMaxHit()
+
+	// Soulreaper axe damage boost
+	if ctx.wearing("Soulreaper axe") {
+		stacks := 5
+		soulFactor := Factor{100 + 6*stacks, 100}
+		maxHit = ApplyFactor(maxHit, soulFactor)
+	}
+
+	// Special attack damage modifiers
+	if ctx.Gear.UseSpec {
+		spec := GetSpecialAttackMod(weapon.Name)
+		if spec != nil && spec.DmgFactor[0] != 0 && spec.DmgFactor != (Factor{1, 1}) {
+			maxHit = ApplyFactor(maxHit, spec.DmgFactor)
+		}
+	}
+
+	// Melee-specific post-calc modifiers
+	if style == StyleStab || style == StyleSlash || style == StyleCrush {
+		// Silverlight/Darklight + demon
+		if (ctx.wearing("Silverlight") || ctx.wearing("Darklight")) && ctx.monsterHasAttribute("demon") {
+			vuln := GetDemonbaneVulnerability(ctx.Monster)
+			maxHit = ApplyAddFactor(maxHit, DemonbaneFactor(60, vuln))
+		}
+
+		// Leaf-bladed battleaxe + leafy
+		if ctx.wearing("Leaf-bladed battleaxe") && ctx.monsterHasAttribute("leafy") {
+			maxHit = ApplyFactor(maxHit, LeafBladedBattleaxeFactor())
+		}
+
+		// Barronite mace + golem
+		if ctx.wearing("Barronite mace") && ctx.monsterHasAttribute("golem") {
+			maxHit = ApplyFactor(maxHit, BarroniteMaceFactor())
+		}
+
+		// Granite hammer + golem
+		if ctx.wearing("Granite hammer") && ctx.monsterHasAttribute("golem") {
+			maxHit = maxHit * 13 / 10
+		}
+
+		// Rat bone weapon + rat
+		if ctx.isWearingRatBoneWeapon() && ctx.monsterHasAttribute("rat") {
+			maxHit += 10
+		}
+
+		// Colossal blade
+		if ctx.wearing("Colossal blade") {
+			bonus := ctx.Monster.Size * 2
+			if bonus > 10 {
+				bonus = 10
+			}
+			maxHit += bonus
+		}
+
+		// Obsidian armour + tzhaar weapon
+		if ctx.isWearingObsidianSet() && ctx.isWearingTzhaarWeapon() {
+			maxHit += maxHit / 10
+		}
 	}
 
 	// Keris + kalphite
 	if ctx.wearingAny("keris") && ctx.monsterHasAttribute("kalphite") {
 		if ctx.wearing("Keris partisan of breaching") {
 			maxHit = ApplyFactor(maxHit, KerisBreachingFactor())
-			atkRoll = ApplyFactor(atkRoll, KerisBreachingFactor())
-			accuracy = getNormalAccuracyRoll(atkRoll, defRoll)
+		} else if ctx.wearing("Keris partisan of amascut") {
+			maxHit = ApplyFactor(maxHit, KerisAmascutFactor())
 		}
 	}
 
@@ -988,6 +1073,15 @@ func (ctx *CalcContext) countInquisitorPieces() int {
 		count++
 	}
 	return count
+}
+
+func (ctx *CalcContext) isWearingRatBoneWeapon() bool {
+	return ctx.wearing("Bone mace") || ctx.wearing("Bone shortbow") || ctx.wearing("Bone staff")
+}
+
+func (ctx *CalcContext) isWearingObsidianSet() bool {
+	return ctx.wearing("Obsidian helmet") && ctx.wearing("Obsidian platebody") &&
+		ctx.wearing("Obsidian platelegs")
 }
 
 func (ctx *CalcContext) isWearingFang() bool {

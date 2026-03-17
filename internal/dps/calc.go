@@ -1,5 +1,9 @@
 package dps
 
+// 1-to-1 port of weirdgloop/osrs-dps-calc PlayerVsNPCCalc.ts
+// Source: https://github.com/weirdgloop/osrs-dps-calc
+// All arithmetic uses integer truncation (Go's default int division).
+
 import (
 	"fmt"
 	"math"
@@ -8,32 +12,62 @@ import (
 	"github.com/JordanCoin/osrs-wiki-cli/internal/data"
 )
 
-// CombatStyle represents an attack style for DPS calculation.
+// CombatStyle represents a player's attack style.
 type CombatStyle string
 
 const (
-	StyleStab   CombatStyle = "Stab"
-	StyleSlash  CombatStyle = "Slash"
-	StyleCrush  CombatStyle = "Crush"
-	StyleRanged CombatStyle = "Ranged"
-	StyleMagic  CombatStyle = "Magic"
+	StyleStab   CombatStyle = "stab"
+	StyleSlash  CombatStyle = "slash"
+	StyleCrush  CombatStyle = "crush"
+	StyleRanged CombatStyle = "ranged"
+	StyleMagic  CombatStyle = "magic"
 )
 
-// Prayer bonuses for top-tier prayers.
-type PrayerBonus struct {
-	Name    string
-	AtkMult float64
-	StrMult float64
+const SecondsPerTick = 0.6
+
+// Factor represents an integer fraction [numerator, denominator].
+// Used for prayer bonuses and multipliers to match TypeScript's integer math.
+type Factor [2]int
+
+// ApplyFactor computes trunc(base * factor[0] / factor[1]).
+func ApplyFactor(base int, f Factor) int {
+	return base * f[0] / f[1]
 }
 
-var (
-	Piety    = PrayerBonus{"Piety", 1.20, 1.23}
-	Rigour   = PrayerBonus{"Rigour", 1.20, 1.23}
-	Augury   = PrayerBonus{"Augury", 1.25, 1.0}
-	NoPrayer = PrayerBonus{"None", 1.0, 1.0}
-)
+// ApplyAddFactor computes base + trunc(base * factor[0] / factor[1]).
+func ApplyAddFactor(base int, f Factor) int {
+	addend := base * f[0] / f[1]
+	return base + addend
+}
 
-// PlayerStats represents the player's combat levels.
+// MaxHitFromEffective computes trunc((effectiveLevel * gearBonus + 320) / 640).
+func MaxHitFromEffective(effectiveLevel, gearBonus int) int {
+	return (effectiveLevel*gearBonus + 320) / 640
+}
+
+// Prayer data matching TypeScript PrayerMap.
+// Factors are [numerator, denominator] where denominator is always 100.
+type PrayerData struct {
+	Name           string
+	CombatStyle    string // "melee", "ranged", "magic"
+	FactorAccuracy Factor // [0,0] means no bonus
+	FactorStrength Factor
+	MagicDmgBonus  int // added to magic damage % (in tenths)
+}
+
+var Prayers = map[string]PrayerData{
+	"piety":         {Name: "Piety", CombatStyle: "melee", FactorAccuracy: Factor{120, 100}, FactorStrength: Factor{123, 100}},
+	"chivalry":      {Name: "Chivalry", CombatStyle: "melee", FactorAccuracy: Factor{115, 100}, FactorStrength: Factor{118, 100}},
+	"rigour":        {Name: "Rigour", CombatStyle: "ranged", FactorAccuracy: Factor{120, 100}, FactorStrength: Factor{123, 100}},
+	"deadeye":       {Name: "Deadeye", CombatStyle: "ranged", FactorAccuracy: Factor{118, 100}, FactorStrength: Factor{118, 100}},
+	"augury":        {Name: "Augury", CombatStyle: "magic", FactorAccuracy: Factor{125, 100}, FactorStrength: Factor{0, 1}, MagicDmgBonus: 40},
+	"mystic_vigour": {Name: "Mystic Vigour", CombatStyle: "magic", FactorAccuracy: Factor{118, 100}, FactorStrength: Factor{0, 1}, MagicDmgBonus: 30},
+	"mystic_might":  {Name: "Mystic Might", CombatStyle: "magic", FactorAccuracy: Factor{115, 100}, FactorStrength: Factor{0, 1}, MagicDmgBonus: 20},
+	"eagle_eye":     {Name: "Eagle Eye", CombatStyle: "ranged", FactorAccuracy: Factor{115, 100}, FactorStrength: Factor{115, 100}},
+	"none":          {Name: "None", CombatStyle: "", FactorAccuracy: Factor{1, 1}, FactorStrength: Factor{1, 1}},
+}
+
+// PlayerStats represents the player's combat levels + boosts.
 type PlayerStats struct {
 	Attack    int
 	Strength  int
@@ -42,22 +76,31 @@ type PlayerStats struct {
 	Magic     int
 	Prayer    int
 	Hitpoints int
+	// Boosts from potions
+	AtkBoost int
+	StrBoost int
+	RngBoost int
+	MagBoost int
 }
 
-// MaxedStats returns maxed player combat stats.
+// MaxedStats returns maxed combat stats with super combat + ranging potion boosts.
 func MaxedStats() PlayerStats {
 	return PlayerStats{
-		Attack:    99,
-		Strength:  99,
-		Defence:   99,
-		Ranged:    99,
-		Magic:     99,
-		Prayer:    99,
-		Hitpoints: 99,
+		Attack: 99, Strength: 99, Defence: 99,
+		Ranged: 99, Magic: 99, Prayer: 99, Hitpoints: 99,
+		AtkBoost: 19, StrBoost: 19, RngBoost: 13, MagBoost: 0,
 	}
 }
 
-// TotalEquipmentBonuses sums up bonuses from all equipped items.
+// MaxedStatsNoPot returns maxed stats with no potion boosts.
+func MaxedStatsNoPot() PlayerStats {
+	return PlayerStats{
+		Attack: 99, Strength: 99, Defence: 99,
+		Ranged: 99, Magic: 99, Prayer: 99, Hitpoints: 99,
+	}
+}
+
+// TotalEquipmentBonuses holds summed equipment stats.
 type TotalEquipmentBonuses struct {
 	StabAtk   int
 	SlashAtk  int
@@ -66,7 +109,7 @@ type TotalEquipmentBonuses struct {
 	RangedAtk int
 	MeleeStr  int
 	RangedStr int
-	MagicStr  int
+	MagicStr  int // in tenths of a percent (e.g., 150 = 15.0%)
 }
 
 // DPSResult holds the output of a DPS calculation.
@@ -75,70 +118,718 @@ type DPSResult struct {
 	Style     CombatStyle `json:"style"`
 	Prayer    string      `json:"prayer"`
 	MaxHit    int         `json:"max_hit"`
+	MinHit    int         `json:"min_hit"`
 	Accuracy  float64     `json:"accuracy"`
 	DPS       float64     `json:"dps"`
 	TTKTicks  int         `json:"ttk_ticks"`
 	TTKString string      `json:"ttk_string"`
 	MonsterHP int         `json:"monster_hp"`
 	AtkSpeed  int         `json:"attack_speed"`
+	AtkRoll   int         `json:"atk_roll"`
+	DefRoll   int         `json:"def_roll"`
+}
+
+// CalcContext holds all state for a single DPS calculation.
+type CalcContext struct {
+	Stats   PlayerStats
+	Bonuses TotalEquipmentBonuses
+	Weapon  *data.Equipment
+	Gear    GearSet
+	Monster *data.Monster
+	Prayer  PrayerData
+	Style   CombatStyle
+	// All equipped item names (lowercase) for quick checks
+	AllItems []string
 }
 
 // Calculate computes DPS for a gear set against a monster.
 func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResult, error) {
-	// Load all equipment pieces and sum bonuses
 	bonuses, weapon, err := resolveGearBonuses(gear)
 	if err != nil {
 		return nil, err
 	}
-
 	if weapon == nil {
 		return nil, fmt.Errorf("no weapon found in gear set")
 	}
 
-	// Determine combat style and prayer based on gear style
 	style, prayer := determineCombatParams(gear, weapon)
 
-	// Calculate attack and strength
-	atkRoll := calcAttackRoll(stats, bonuses, style, prayer)
-	defRoll := calcDefenceRoll(monster, style)
-	accuracy := calcAccuracy(atkRoll, defRoll)
-	maxHit := calcMaxHit(stats, bonuses, style, prayer, weapon)
+	ctx := &CalcContext{
+		Stats:   stats,
+		Bonuses: bonuses,
+		Weapon:  weapon,
+		Gear:    gear,
+		Monster: monster,
+		Prayer:  prayer,
+		Style:   style,
+	}
+	// Build lowercase item list
+	for _, name := range gear.GearSlots() {
+		if name != "" {
+			ctx.AllItems = append(ctx.AllItems, strings.ToLower(name))
+		}
+	}
 
-	// Apply special weapon/gear modifiers
-	maxHit, accuracy = applySpecialModifiers(maxHit, accuracy, weapon, monster, gear)
+	atkRoll := ctx.getPlayerMaxAttackRoll()
+	defRoll := ctx.getNPCDefenceRoll()
+	accuracy := getNormalAccuracyRoll(atkRoll, defRoll)
+
+	// Fang accuracy override
+	if ctx.wearing("Osmumten's fang") || ctx.wearing("Osmumten's fang (or)") {
+		if style == StyleStab {
+			accuracy = getFangAccuracyRoll(atkRoll, defRoll)
+		}
+	}
+
+	minHit, maxHit := ctx.getPlayerMaxHit()
 
 	atkSpeed := weapon.Speed
 	if atkSpeed <= 0 {
 		atkSpeed = 4
 	}
 
-	dps := calcDPS(accuracy, maxHit, atkSpeed)
-	ttkTicks := calcTTK(monster.Skills.HP, dps, atkSpeed)
-	ttkStr := formatTTK(ttkTicks)
+	// DPS = (accuracy * (maxHit + minHit) / 2) / (atkSpeed * 0.6)
+	expectedHit := accuracy * float64(maxHit+minHit) / 2.0
+	dps := expectedHit / (float64(atkSpeed) * SecondsPerTick)
+
+	ttkTicks := 0
+	if dps > 0 {
+		seconds := float64(monster.Skills.HP) / dps
+		ttkTicks = int(math.Ceil(seconds/SecondsPerTick/float64(atkSpeed))) * atkSpeed
+	}
 
 	return &DPSResult{
 		Weapon:    weapon.Name,
 		Style:     style,
 		Prayer:    prayer.Name,
 		MaxHit:    maxHit,
-		Accuracy:  math.Round(accuracy*1000) / 10, // percentage with 1 decimal
+		MinHit:    minHit,
+		Accuracy:  math.Round(accuracy*1000) / 10,
 		DPS:       math.Round(dps*100) / 100,
 		TTKTicks:  ttkTicks,
-		TTKString: ttkStr,
+		TTKString: formatTTK(ttkTicks),
 		MonsterHP: monster.Skills.HP,
 		AtkSpeed:  atkSpeed,
+		AtkRoll:   atkRoll,
+		DefRoll:   defRoll,
 	}, nil
 }
+
+// ── Accuracy formulas ──────────────────────────────────────────────
+
+// getNormalAccuracyRoll computes standard accuracy.
+// Matches BaseCalc.getNormalAccuracyRoll in TypeScript.
+func getNormalAccuracyRoll(atk, def int) float64 {
+	a := atk
+	d := def
+
+	if a < 0 {
+		a = min(0, a+2)
+	}
+	if d < 0 {
+		d = min(0, d+2)
+	}
+
+	fa := float64(a)
+	fd := float64(d)
+
+	if a >= 0 && d >= 0 {
+		if a > d {
+			return 1.0 - (fd+2.0)/(2.0*(fa+1.0))
+		}
+		return fa / (2.0*fd + 1.0)
+	}
+	if a >= 0 && d < 0 {
+		return 1.0 - 1.0/float64(-d+1)/float64(a+1)
+	}
+	if a < 0 && d >= 0 {
+		return 0
+	}
+	// Both negative
+	return getNormalAccuracyRoll(-d, -a)
+}
+
+// getFangAccuracyRoll computes Osmumten's fang double-roll accuracy.
+func getFangAccuracyRoll(atk, def int) float64 {
+	a := atk
+	d := def
+
+	if a < 0 {
+		a = min(0, a+2)
+	}
+	if d < 0 {
+		d = min(0, d+2)
+	}
+
+	fa := float64(a)
+	fd := float64(d)
+
+	if a >= 0 && d >= 0 {
+		if a > d {
+			return 1.0 - (fd+2.0)*(2.0*fd+3.0)/(fa+1.0)/(fa+1.0)/6.0
+		}
+		return fa * (4.0*fa + 5.0) / 6.0 / (fa + 1.0) / (fd + 1.0)
+	}
+	if a >= 0 && d < 0 {
+		return 1.0 - 1.0/float64(-d+1)/float64(a+1)
+	}
+	if a < 0 && d >= 0 {
+		return 0
+	}
+	// Both negative: reverse roll
+	nd := float64(-a)
+	na := float64(-d)
+	if na < nd {
+		return na * (nd*6.0 - 2.0*na + 5.0) / 6.0 / (nd + 1.0) / (nd + 1.0)
+	}
+	return 1.0 - (nd+2.0)*(2.0*nd+3.0)/6.0/(nd+1.0)/(na+1.0)
+}
+
+// ── NPC Defence Roll ───────────────────────────────────────────────
+
+func (ctx *CalcContext) getNPCDefenceRoll() int {
+	m := ctx.Monster
+	style := ctx.Style
+
+	// For magic style, most monsters use magic level for defence, not def level.
+	// Exception: some specific NPCs use defence level.
+	var level int
+	if style == StyleMagic && !usesDefLevelForMagicDef(m) {
+		level = m.Skills.Magic
+	} else {
+		level = m.Skills.Def
+	}
+
+	effectiveLevel := level + 9
+
+	var bonus int
+	switch style {
+	case StyleStab:
+		bonus = m.Defensive.Stab
+	case StyleSlash:
+		bonus = m.Defensive.Slash
+	case StyleCrush:
+		bonus = m.Defensive.Crush
+	case StyleMagic:
+		bonus = m.Defensive.Magic
+	case StyleRanged:
+		bonus = m.Defensive.Standard
+	}
+
+	defRoll := effectiveLevel * (bonus + 64)
+	return defRoll
+}
+
+// usesDefLevelForMagicDef checks if a monster uses defence level instead of magic
+// level for magic defence calculations.
+func usesDefLevelForMagicDef(m *data.Monster) bool {
+	// Ice demon, Verzik (all forms), Fragment of Seren, specific baboons, rabbit
+	defLevelIDs := []int{
+		7584, 7585, // Ice Demon
+		8369, 8370, 8371, 8372, 8373, 8374, 8375, // Verzik
+		9466, // Fragment of Seren
+		11709, 11712, // Baboon Brawler
+		9118, // Rabbit (Prifddinas)
+	}
+	for _, id := range defLevelIDs {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// ── Player Max Attack Roll ─────────────────────────────────────────
+
+func (ctx *CalcContext) getPlayerMaxAttackRoll() int {
+	switch {
+	case ctx.Style == StyleRanged:
+		return ctx.getPlayerMaxRangedAttackRoll()
+	case ctx.Style == StyleMagic:
+		return ctx.getPlayerMaxMagicAttackRoll()
+	default:
+		return ctx.getPlayerMaxMeleeAttackRoll()
+	}
+}
+
+func (ctx *CalcContext) getPlayerMaxMeleeAttackRoll() int {
+	effectiveLevel := ctx.Stats.Attack + ctx.Stats.AtkBoost
+
+	// Prayer
+	if ctx.Prayer.FactorAccuracy[0] != 0 {
+		effectiveLevel = ApplyFactor(effectiveLevel, ctx.Prayer.FactorAccuracy)
+	}
+
+	// Stance bonus: +8 base, +3 accurate, +1 controlled
+	effectiveLevel += 8
+
+	// Void melee: * 11/10
+	if ctx.isWearingMeleeVoid() {
+		effectiveLevel = effectiveLevel * 11 / 10
+	}
+
+	// Base roll
+	var equipBonus int
+	switch ctx.Style {
+	case StyleStab:
+		equipBonus = ctx.Bonuses.StabAtk
+	case StyleSlash:
+		equipBonus = ctx.Bonuses.SlashAtk
+	case StyleCrush:
+		equipBonus = ctx.Bonuses.CrushAtk
+	}
+	attackRoll := effectiveLevel * (equipBonus + 64)
+
+	// Salve amulet (e)/(ei) + undead: * 6/5
+	if ctx.wearing("Salve amulet(ei)") && ctx.monsterHasAttribute("undead") {
+		attackRoll = ApplyFactor(attackRoll, Factor{6, 5})
+	} else if ctx.wearing("Salve amulet (e)") && ctx.monsterHasAttribute("undead") {
+		attackRoll = ApplyFactor(attackRoll, Factor{6, 5})
+	} else if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Slayer helmet") || ctx.wearing("Black mask (i)") || ctx.wearing("Black mask")) && ctx.isOnSlayerTask() {
+		// Black mask / slayer helm: * 7/6
+		attackRoll = ApplyFactor(attackRoll, Factor{7, 6})
+	}
+
+	// Dragon hunter lance + dragon
+	if ctx.wearing("Dragon hunter lance") && ctx.monsterHasAttribute("dragon") {
+		attackRoll = ApplyFactor(attackRoll, Factor{6, 5})
+	}
+
+	// Arclight + demon
+	if ctx.wearing("Arclight") && ctx.monsterHasAttribute("demon") {
+		attackRoll = ApplyAddFactor(attackRoll, Factor{70, 100})
+	}
+
+	// Inquisitor's (crush style)
+	if ctx.Style == StyleCrush {
+		pieces := ctx.countInquisitorPieces()
+		if pieces > 0 {
+			if ctx.wearing("Inquisitor's mace") {
+				pieces *= 5 // 2.5% each, no full set bonus
+			} else if pieces == 3 {
+				pieces = 5 // 1% extra for full set
+			}
+			attackRoll = ApplyFactor(attackRoll, Factor{200 + pieces, 200})
+		}
+	}
+
+	return attackRoll
+}
+
+func (ctx *CalcContext) getPlayerMaxRangedAttackRoll() int {
+	effectiveLevel := ctx.Stats.Ranged + ctx.Stats.RngBoost
+
+	if ctx.Prayer.FactorAccuracy[0] != 0 {
+		effectiveLevel = ApplyFactor(effectiveLevel, ctx.Prayer.FactorAccuracy)
+	}
+
+	effectiveLevel += 8
+
+	// Ranged void: * 11/10
+	if ctx.isWearingRangedVoid() {
+		effectiveLevel = effectiveLevel * 11 / 10
+	}
+
+	attackRoll := effectiveLevel * (ctx.Bonuses.RangedAtk + 64)
+
+	// Crystal bow/Bowfa: * (20 + crystalPieces) / 20
+	if ctx.wearing("Crystal bow") || ctx.wearingAny("Bow of faerdhinen") {
+		pieces := ctx.countCrystalPieces()
+		attackRoll = attackRoll * (20 + pieces) / 20
+	}
+
+	// Salve amulet(ei) + undead
+	if ctx.wearing("Salve amulet(ei)") && ctx.monsterHasAttribute("undead") {
+		attackRoll = ApplyFactor(attackRoll, Factor{6, 5})
+	} else if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Black mask (i)")) && ctx.isOnSlayerTask() {
+		attackRoll = ApplyFactor(attackRoll, Factor{23, 20})
+	}
+
+	// Twisted bow scaling
+	if ctx.wearing("Twisted bow") {
+		attackRoll = tbowScaling(attackRoll, ctx.Monster, true)
+	}
+
+	// Dragon hunter crossbow + dragon
+	if ctx.wearing("Dragon hunter crossbow") && ctx.monsterHasAttribute("dragon") {
+		attackRoll = ApplyFactor(attackRoll, Factor{13, 10})
+	}
+
+	return attackRoll
+}
+
+func (ctx *CalcContext) getPlayerMaxMagicAttackRoll() int {
+	effectiveLevel := ctx.Stats.Magic + ctx.Stats.MagBoost
+
+	if ctx.Prayer.FactorAccuracy[0] != 0 {
+		effectiveLevel = ApplyFactor(effectiveLevel, ctx.Prayer.FactorAccuracy)
+	}
+
+	effectiveLevel += 9
+
+	// Magic void: * 29/20
+	if ctx.isWearingMagicVoid() {
+		effectiveLevel = effectiveLevel * 29 / 20
+	}
+
+	attackRoll := effectiveLevel * (ctx.Bonuses.MagicAtk + 64)
+
+	// Salve amulet(ei) + undead: additive +20%
+	if ctx.wearing("Salve amulet(ei)") && ctx.monsterHasAttribute("undead") {
+		attackRoll = attackRoll * 120 / 100
+	} else if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Black mask (i)")) && ctx.isOnSlayerTask() {
+		attackRoll = ApplyFactor(attackRoll, Factor{23, 20})
+	}
+
+	// Smoke battlestaff + standard spellbook: +10%
+	if ctx.wearing("Smoke battlestaff") || ctx.wearing("Mystic smoke staff") {
+		attackRoll = attackRoll * 110 / 100
+	}
+
+	// Dragon hunter lance/wand + dragon
+	if ctx.wearing("Dragon hunter wand") && ctx.monsterHasAttribute("dragon") {
+		attackRoll = ApplyFactor(attackRoll, Factor{7, 4})
+	}
+
+	return attackRoll
+}
+
+// ── Player Max Hit ─────────────────────────────────────────────────
+
+func (ctx *CalcContext) getPlayerMaxHit() (minHit, maxHit int) {
+	switch {
+	case ctx.Style == StyleRanged:
+		return ctx.getPlayerMaxRangedHit()
+	case ctx.Style == StyleMagic:
+		return ctx.getPlayerMaxMagicHit()
+	default:
+		return ctx.getPlayerMaxMeleeHit()
+	}
+}
+
+func (ctx *CalcContext) getPlayerMaxMeleeHit() (int, int) {
+	effectiveLevel := ctx.Stats.Strength + ctx.Stats.StrBoost
+
+	// Prayer
+	if ctx.Prayer.FactorStrength[0] != 0 {
+		effectiveLevel = ApplyFactor(effectiveLevel, ctx.Prayer.FactorStrength)
+	}
+
+	// Stance: +8 base, +3 aggressive, +1 controlled
+	effectiveLevel += 8
+
+	// Melee void: * 11/10
+	if ctx.isWearingMeleeVoid() {
+		effectiveLevel = effectiveLevel * 11 / 10
+	}
+
+	maxHit := MaxHitFromEffective(effectiveLevel, ctx.Bonuses.MeleeStr+64)
+
+	// Salve amulet(e)/(ei) + undead: * 6/5
+	if (ctx.wearing("Salve amulet(ei)") || ctx.wearing("Salve amulet (e)")) && ctx.monsterHasAttribute("undead") {
+		maxHit = ApplyFactor(maxHit, Factor{6, 5})
+	} else if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Slayer helmet") || ctx.wearing("Black mask (i)") || ctx.wearing("Black mask")) && ctx.isOnSlayerTask() {
+		maxHit = ApplyFactor(maxHit, Factor{7, 6})
+	}
+
+	// Dragon hunter lance + dragon
+	if ctx.wearing("Dragon hunter lance") && ctx.monsterHasAttribute("dragon") {
+		maxHit = ApplyFactor(maxHit, Factor{6, 5})
+	}
+
+	// Arclight + demon
+	if ctx.wearing("Arclight") && ctx.monsterHasAttribute("demon") {
+		maxHit = ApplyAddFactor(maxHit, Factor{70, 100})
+	}
+
+	// Inquisitor's (crush style)
+	if ctx.Style == StyleCrush {
+		pieces := ctx.countInquisitorPieces()
+		if pieces > 0 {
+			if ctx.wearing("Inquisitor's mace") {
+				pieces *= 5
+			} else if pieces == 3 {
+				pieces = 5
+			}
+			maxHit = ApplyFactor(maxHit, Factor{200 + pieces, 200})
+		}
+	}
+
+	// Colossal blade: + min(size*2, 10)
+	if ctx.wearing("Colossal blade") {
+		bonus := ctx.Monster.Size * 2
+		if bonus > 10 {
+			bonus = 10
+		}
+		maxHit += bonus
+	}
+
+	// Fang: shrink the hit range
+	if ctx.wearing("Osmumten's fang") || ctx.wearing("Osmumten's fang (or)") {
+		shrink := maxHit * 3 / 20
+		return shrink, maxHit - shrink
+	}
+
+	return 0, maxHit
+}
+
+func (ctx *CalcContext) getPlayerMaxRangedHit() (int, int) {
+	effectiveLevel := ctx.Stats.Ranged + ctx.Stats.RngBoost
+
+	// Prayer
+	if ctx.Prayer.FactorStrength[0] != 0 {
+		effectiveLevel = ApplyFactor(effectiveLevel, ctx.Prayer.FactorStrength)
+	}
+
+	effectiveLevel += 8
+
+	// Elite ranged void: * 9/8. Regular: * 11/10
+	if ctx.isWearingEliteRangedVoid() {
+		effectiveLevel = effectiveLevel * 9 / 8
+	} else if ctx.isWearingRangedVoid() {
+		effectiveLevel = effectiveLevel * 11 / 10
+	}
+
+	maxHit := MaxHitFromEffective(effectiveLevel, ctx.Bonuses.RangedStr+64)
+
+	// Crystal bow/Bowfa: * (40 + crystalPieces) / 40
+	if ctx.wearing("Crystal bow") || ctx.wearingAny("Bow of faerdhinen") {
+		pieces := ctx.countCrystalPieces()
+		maxHit = maxHit * (40 + pieces) / 40
+	}
+
+	// Salve/slayer (same pattern as melee)
+	if ctx.wearing("Salve amulet(ei)") && ctx.monsterHasAttribute("undead") {
+		maxHit = ApplyFactor(maxHit, Factor{6, 5})
+	} else if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Black mask (i)")) && ctx.isOnSlayerTask() {
+		maxHit = ApplyFactor(maxHit, Factor{23, 20})
+	}
+
+	// Twisted bow
+	if ctx.wearing("Twisted bow") {
+		maxHit = tbowScaling(maxHit, ctx.Monster, false)
+	}
+
+	// Dragon hunter crossbow + dragon
+	if ctx.wearing("Dragon hunter crossbow") && ctx.monsterHasAttribute("dragon") {
+		maxHit = ApplyFactor(maxHit, Factor{5, 4})
+	}
+
+	return 0, maxHit
+}
+
+func (ctx *CalcContext) getPlayerMaxMagicHit() (int, int) {
+	magicLvl := ctx.Stats.Magic
+
+	// Base max hit depends on weapon
+	maxHit := ctx.poweredStaffMaxHit(magicLvl)
+	if maxHit == 0 {
+		return 0, 0
+	}
+
+	// Magic damage bonus
+	// magicDmgBonus is in tenths of percent (e.g., 150 = 15.0%)
+	magicDmgBonus := ctx.Bonuses.MagicStr
+
+	// Prayer magic damage bonus
+	magicDmgBonus += ctx.Prayer.MagicDmgBonus
+
+	// Salve amulet(ei) + undead: +200 (20.0%)
+	if ctx.wearing("Salve amulet(ei)") && ctx.monsterHasAttribute("undead") {
+		magicDmgBonus += 200
+	}
+
+	// Smoke battlestaff + standard spellbook: +100 (10.0%)
+	if ctx.wearing("Smoke battlestaff") || ctx.wearing("Mystic smoke staff") {
+		magicDmgBonus += 100
+	}
+
+	// Apply magic damage bonus: maxHit = trunc(maxHit + trunc(maxHit * bonus / 1000))
+	maxHit = maxHit + maxHit*magicDmgBonus/1000
+
+	// Black mask (i) / slayer helm (i) for magic: * 23/20
+	if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Black mask (i)")) && ctx.isOnSlayerTask() {
+		maxHit = maxHit * 23 / 20
+	}
+
+	// Tome of fire + fire spell: * 11/10
+	if ctx.wearing("Tome of fire") {
+		maxHit = maxHit * 11 / 10
+	}
+
+	return 0, maxHit
+}
+
+func (ctx *CalcContext) poweredStaffMaxHit(magicLevel int) int {
+	if ctx.Weapon == nil {
+		return 0
+	}
+	name := ctx.Weapon.Name
+	switch {
+	case strings.Contains(name, "Sanguinesti staff"), strings.Contains(name, "Holy sanguinesti staff"):
+		return max(1, magicLevel/3-1)
+	case strings.Contains(name, "Trident of the swamp"):
+		return max(1, magicLevel/3-2)
+	case strings.Contains(name, "Trident of the seas"):
+		return max(1, magicLevel/3-5)
+	case strings.Contains(name, "Tumeken's shadow"):
+		return max(1, magicLevel/3+1)
+	case strings.Contains(name, "Warped sceptre"):
+		return max(1, (8*magicLevel+96)/37)
+	case strings.Contains(name, "Accursed sceptre"):
+		return max(1, magicLevel/3-6)
+	case strings.Contains(name, "Thammaron's sceptre"):
+		return max(1, magicLevel/3-8)
+	case strings.Contains(name, "Dawnbringer"):
+		return max(1, magicLevel/6-1)
+	case strings.Contains(name, "Starter staff"):
+		return 8
+	default:
+		// For spell-based casting, caller should provide the spell max hit
+		// For now, return 0 to indicate "not a powered staff"
+		return 0
+	}
+}
+
+// ── Twisted Bow Scaling ────────────────────────────────────────────
+
+// tbowScaling matches the TypeScript tbowScaling function.
+// accuracyMode=true for attack roll, false for max hit.
+func tbowScaling(current int, monster *data.Monster, accuracyMode bool) int {
+	factor := 14
+	base := 250
+	if accuracyMode {
+		factor = 10
+		base = 140
+	}
+
+	// Magic value: max(skills.magic, offensive.magic), capped at 250
+	magic := monster.Skills.Magic
+	if monster.Offensive.Magic > magic {
+		magic = monster.Offensive.Magic
+	}
+	cap := 250
+	if magic > cap {
+		magic = cap
+	}
+
+	t2 := (3*magic - factor) / 100
+	t3inner := 3*magic/10 - 10*factor
+	t3 := (t3inner * t3inner) / 100
+
+	bonus := base + t2 - t3
+	return current * bonus / 100
+}
+
+// ── Scythe of Vitur ────────────────────────────────────────────────
+
+func scytheHitsplats(monsterSize int) int {
+	hits := monsterSize
+	if hits < 1 {
+		hits = 1
+	}
+	if hits > 3 {
+		hits = 3
+	}
+	return hits
+}
+
+// ── Equipment check helpers ────────────────────────────────────────
+
+func (ctx *CalcContext) wearing(item string) bool {
+	lower := strings.ToLower(item)
+	for _, equipped := range ctx.AllItems {
+		if equipped == lower {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *CalcContext) wearingAny(substring string) bool {
+	lower := strings.ToLower(substring)
+	for _, equipped := range ctx.AllItems {
+		if strings.Contains(equipped, lower) {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *CalcContext) monsterHasAttribute(attr string) bool {
+	lower := strings.ToLower(attr)
+	for _, a := range ctx.Monster.Attributes {
+		if strings.ToLower(a) == lower {
+			return true
+		}
+	}
+	return false
+}
+
+func (ctx *CalcContext) isOnSlayerTask() bool {
+	// CLI doesn't have slayer task context — assume true if slayer helm is worn
+	return ctx.wearing("Slayer helmet") || ctx.wearing("Slayer helmet (i)") ||
+		ctx.wearing("Black mask") || ctx.wearing("Black mask (i)")
+}
+
+func (ctx *CalcContext) isWearingMeleeVoid() bool {
+	return ctx.wearingAny("void") && ctx.wearing("Void melee helm")
+}
+
+func (ctx *CalcContext) isWearingRangedVoid() bool {
+	return ctx.wearingAny("void") && ctx.wearing("Void ranger helm")
+}
+
+func (ctx *CalcContext) isWearingEliteRangedVoid() bool {
+	return ctx.wearing("Elite void top") && ctx.wearing("Elite void robe") &&
+		ctx.wearing("Void knight gloves") && ctx.wearing("Void ranger helm")
+}
+
+func (ctx *CalcContext) isWearingMagicVoid() bool {
+	return ctx.wearingAny("void") && ctx.wearing("Void mage helm")
+}
+
+func (ctx *CalcContext) countInquisitorPieces() int {
+	count := 0
+	if ctx.wearing("Inquisitor's great helm") {
+		count++
+	}
+	if ctx.wearing("Inquisitor's hauberk") {
+		count++
+	}
+	if ctx.wearing("Inquisitor's plateskirt") {
+		count++
+	}
+	return count
+}
+
+func (ctx *CalcContext) countCrystalPieces() int {
+	count := 0
+	if ctx.wearing("Crystal helm") {
+		count++
+	}
+	if ctx.wearingAny("crystal legs") {
+		count += 2
+	}
+	if ctx.wearingAny("crystal body") {
+		count += 3
+	}
+	return count
+}
+
+// ── Gear resolution ────────────────────────────────────────────────
 
 func resolveGearBonuses(gear GearSet) (TotalEquipmentBonuses, *data.Equipment, error) {
 	var bonuses TotalEquipmentBonuses
 	var weapon *data.Equipment
 
 	for slot, itemName := range gear.GearSlots() {
+		if itemName == "" {
+			continue
+		}
 		equip, err := data.FindEquipment(itemName)
 		if err != nil {
-			// Skip items we can't find (some preset items may not be in the dataset)
-			continue
+			continue // skip items not in dataset
 		}
 
 		bonuses.StabAtk += equip.Offensive.Stab
@@ -158,20 +849,22 @@ func resolveGearBonuses(gear GearSet) (TotalEquipmentBonuses, *data.Equipment, e
 	return bonuses, weapon, nil
 }
 
-func determineCombatParams(gear GearSet, weapon *data.Equipment) (CombatStyle, PrayerBonus) {
+func determineCombatParams(gear GearSet, weapon *data.Equipment) (CombatStyle, PrayerData) {
 	switch gear.Style {
 	case "ranged":
-		return StyleRanged, Rigour
+		return StyleRanged, Prayers["rigour"]
 	case "magic":
-		return StyleMagic, Augury
+		return StyleMagic, Prayers["augury"]
 	default:
-		// For melee, pick the best style based on weapon category
 		style := bestMeleeStyle(weapon)
-		return style, Piety
+		return style, Prayers["piety"]
 	}
 }
 
 func bestMeleeStyle(weapon *data.Equipment) CombatStyle {
+	if weapon == nil {
+		return StyleCrush
+	}
 	cat := strings.ToLower(weapon.Category)
 	switch {
 	case strings.Contains(cat, "slash"):
@@ -181,220 +874,38 @@ func bestMeleeStyle(weapon *data.Equipment) CombatStyle {
 	case strings.Contains(cat, "crush"), strings.Contains(cat, "blunt"):
 		return StyleCrush
 	default:
-		// Pick whichever offensive bonus is highest
-		max := weapon.Offensive.Slash
+		bestVal := weapon.Offensive.Slash
 		style := StyleSlash
-		if weapon.Offensive.Stab > max {
-			max = weapon.Offensive.Stab
+		if weapon.Offensive.Stab > bestVal {
+			bestVal = weapon.Offensive.Stab
 			style = StyleStab
 		}
-		if weapon.Offensive.Crush > max {
+		if weapon.Offensive.Crush > bestVal {
 			style = StyleCrush
 		}
 		return style
 	}
 }
 
-func calcAttackRoll(stats PlayerStats, bonuses TotalEquipmentBonuses, style CombatStyle, prayer PrayerBonus) int {
-	var baseLevel int
-	var equipBonus int
-
-	switch style {
-	case StyleRanged:
-		baseLevel = stats.Ranged
-		equipBonus = bonuses.RangedAtk
-	case StyleMagic:
-		baseLevel = stats.Magic
-		equipBonus = bonuses.MagicAtk
-	case StyleStab:
-		baseLevel = stats.Attack
-		equipBonus = bonuses.StabAtk
-	case StyleSlash:
-		baseLevel = stats.Attack
-		equipBonus = bonuses.SlashAtk
-	case StyleCrush:
-		baseLevel = stats.Attack
-		equipBonus = bonuses.CrushAtk
-	}
-
-	// Effective level = floor(base * prayer) + stance bonus + 8
-	effectiveLevel := int(math.Floor(float64(baseLevel) * prayer.AtkMult))
-	effectiveLevel += 8 // potionless, stance=0 (accurate would add 3)
-
-	return effectiveLevel * (equipBonus + 64)
-}
-
-func calcDefenceRoll(monster *data.Monster, style CombatStyle) int {
-	var defBonus int
-
-	switch style {
-	case StyleStab:
-		defBonus = monster.Defensive.Stab
-	case StyleSlash:
-		defBonus = monster.Defensive.Slash
-	case StyleCrush:
-		defBonus = monster.Defensive.Crush
-	case StyleMagic:
-		defBonus = monster.Defensive.Magic
-	case StyleRanged:
-		// Use "standard" ranged defence as default
-		defBonus = monster.Defensive.Standard
-	}
-
-	// Monster effective defence = defence level + 9
-	effectiveDefLevel := monster.Skills.Def + 9
-
-	return effectiveDefLevel * (defBonus + 64)
-}
-
-func calcAccuracy(atkRoll, defRoll int) float64 {
-	atk := float64(atkRoll)
-	def := float64(defRoll)
-
-	if atk > def {
-		return 1.0 - (def+2.0)/(2.0*(atk+1.0))
-	}
-	return atk / (2.0*def + 1.0)
-}
-
-func calcMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, style CombatStyle, prayer PrayerBonus, weapon *data.Equipment) int {
-	var baseLevel int
-	var strBonus int
-
-	switch style {
-	case StyleRanged:
-		baseLevel = stats.Ranged
-		strBonus = bonuses.RangedStr
-	case StyleMagic:
-		return calcMagicMaxHit(stats, bonuses, weapon)
-	default:
-		// Melee
-		baseLevel = stats.Strength
-		strBonus = bonuses.MeleeStr
-	}
-
-	effectiveStr := int(math.Floor(float64(baseLevel) * prayer.StrMult))
-	effectiveStr += 8
-
-	return int(math.Floor(float64(effectiveStr)*(float64(strBonus)+64.0)/640.0)) + 1
-}
-
-func applySpecialModifiers(maxHit int, accuracy float64, weapon *data.Equipment, monster *data.Monster, gear GearSet) (int, float64) {
-	name := strings.ToLower(weapon.Name)
-
-	// Scythe of vitur: 3 hitsplats (100%, 50%, 25%) on large monsters
-	// We handle this by increasing effective max hit
-	if strings.Contains(name, "scythe of vitur") {
-		maxHit = int(math.Floor(float64(maxHit) * scytheDamageMultiplier(monster.Size)))
-	}
-
-	// Twisted bow: accuracy and damage scale with monster's magic level
-	if strings.Contains(name, "twisted bow") {
-		magicLvl := monster.Skills.Magic
-		if magicLvl > 250 {
-			magicLvl = 250
-		}
-		// Tbow accuracy: 140 + (3*magic - 10) / 100 - (3*magic/10 - 100)^2 / 100
-		tbowAcc := 140.0 + (3.0*float64(magicLvl)-10.0)/100.0 - math.Pow(3.0*float64(magicLvl)/10.0-100.0, 2)/100.0
-		if tbowAcc > 140 {
-			tbowAcc = 140
-		}
-		tbowDmg := 250.0 + (3.0*float64(magicLvl)-14.0)/100.0 - math.Pow(3.0*float64(magicLvl)/10.0-140.0, 2)/100.0
-		if tbowDmg > 250 {
-			tbowDmg = 250
-		}
-		accuracy = accuracy * tbowAcc / 100.0
-		if accuracy > 1.0 {
-			accuracy = 1.0
-		}
-		maxHit = int(math.Floor(float64(maxHit) * tbowDmg / 100.0))
-	}
-
-	// Void equipment bonus
-	if isVoidSet(gear) {
-		if gear.Style == "ranged" {
-			accuracy *= 1.10
-			maxHit = int(math.Floor(float64(maxHit) * 1.125))
-		} else if gear.Style == "melee" {
-			accuracy *= 1.10
-			maxHit = int(math.Floor(float64(maxHit) * 1.10))
-		}
-	}
-
-	// Salve amulet / slayer helm bonuses for undead/task — skip for simplicity
-
-	return maxHit, accuracy
-}
-
-func calcMagicMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, weapon *data.Equipment) int {
-	baseMax := poweredStaffBaseMaxHit(stats.Magic, weapon)
-	if baseMax == 0 {
-		// Fallback for unhandled magic weapons.
-		baseMax = max(1, stats.Magic/3-5)
-	}
-
-	maxHit := int(math.Floor(float64(baseMax) * (1.0 + float64(bonuses.MagicStr)/100.0)))
-	if maxHit < 1 {
-		return 1
-	}
-	return maxHit
-}
-
-func poweredStaffBaseMaxHit(level int, weapon *data.Equipment) int {
-	if weapon == nil {
-		return 0
-	}
-
-	name := strings.ToLower(strings.TrimSpace(weapon.Name))
-	switch {
-	case strings.Contains(name, "sanguinesti staff"):
-		return max(5, level/3-1)
-	case strings.Contains(name, "trident of the swamp"):
-		return max(4, level/3-2)
-	case strings.Contains(name, "trident of the seas"):
-		return max(1, level/3-5)
-	default:
-		return 0
-	}
-}
-
-func scytheDamageMultiplier(size int) float64 {
-	switch {
-	case size >= 3:
-		return 1.75
-	case size == 2:
-		return 1.5
-	default:
-		return 1.0
-	}
-}
-
-func isVoidSet(gear GearSet) bool {
-	return strings.Contains(strings.ToLower(gear.Head), "void") &&
-		strings.Contains(strings.ToLower(gear.Body), "void") &&
-		strings.Contains(strings.ToLower(gear.Legs), "void") &&
-		strings.Contains(strings.ToLower(gear.Hands), "void")
-}
-
-func calcDPS(accuracy float64, maxHit int, atkSpeed int) float64 {
-	expectedHit := accuracy * float64(maxHit) / 2.0
-	return expectedHit / (float64(atkSpeed) * 0.6)
-}
-
-func calcTTK(hp int, dps float64, atkSpeed int) int {
-	if dps <= 0 {
-		return 0
-	}
-	seconds := float64(hp) / dps
-	ticks := int(math.Ceil(seconds / 0.6))
-	// Round to nearest attack tick
-	ticks = ((ticks + atkSpeed - 1) / atkSpeed) * atkSpeed
-	return ticks
-}
+// ── Formatting ─────────────────────────────────────────────────────
 
 func formatTTK(ticks int) string {
-	seconds := float64(ticks) * 0.6
+	seconds := float64(ticks) * SecondsPerTick
 	mins := int(seconds) / 60
 	secs := int(seconds) % 60
 	return fmt.Sprintf("~%d:%02d", mins, secs)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -27,20 +27,20 @@ type PrayerBonus struct {
 }
 
 var (
-	Piety   = PrayerBonus{"Piety", 1.20, 1.23}
-	Rigour  = PrayerBonus{"Rigour", 1.20, 1.23}
-	Augury  = PrayerBonus{"Augury", 1.25, 0} // magic doesn't boost str via prayer the same way
+	Piety    = PrayerBonus{"Piety", 1.20, 1.23}
+	Rigour   = PrayerBonus{"Rigour", 1.20, 1.23}
+	Augury   = PrayerBonus{"Augury", 1.25, 1.0}
 	NoPrayer = PrayerBonus{"None", 1.0, 1.0}
 )
 
 // PlayerStats represents the player's combat levels.
 type PlayerStats struct {
-	Attack   int
-	Strength int
-	Defence  int
-	Ranged   int
-	Magic    int
-	Prayer   int
+	Attack    int
+	Strength  int
+	Defence   int
+	Ranged    int
+	Magic     int
+	Prayer    int
 	Hitpoints int
 }
 
@@ -102,7 +102,7 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 	atkRoll := calcAttackRoll(stats, bonuses, style, prayer)
 	defRoll := calcDefenceRoll(monster, style)
 	accuracy := calcAccuracy(atkRoll, defRoll)
-	maxHit := calcMaxHit(stats, bonuses, style, prayer)
+	maxHit := calcMaxHit(stats, bonuses, style, prayer, weapon)
 
 	// Apply special weapon/gear modifiers
 	maxHit, accuracy = applySpecialModifiers(maxHit, accuracy, weapon, monster, gear)
@@ -257,7 +257,7 @@ func calcAccuracy(atkRoll, defRoll int) float64 {
 	return atk / (2.0*def + 1.0)
 }
 
-func calcMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, style CombatStyle, prayer PrayerBonus) int {
+func calcMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, style CombatStyle, prayer PrayerBonus, weapon *data.Equipment) int {
 	var baseLevel int
 	var strBonus int
 
@@ -266,10 +266,7 @@ func calcMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, style CombatSt
 		baseLevel = stats.Ranged
 		strBonus = bonuses.RangedStr
 	case StyleMagic:
-		// Magic max hit is different — based on spell/staff
-		// For powered staves, use magic_str bonus
-		baseLevel = stats.Magic
-		strBonus = bonuses.MagicStr
+		return calcMagicMaxHit(stats, bonuses, weapon)
 	default:
 		// Melee
 		baseLevel = stats.Strength
@@ -279,17 +276,6 @@ func calcMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, style CombatSt
 	effectiveStr := int(math.Floor(float64(baseLevel) * prayer.StrMult))
 	effectiveStr += 8
 
-	if style == StyleMagic {
-		// Powered staves: base max hit = magic level / 3 - 1, scaled by magic_str
-		// Simplified: use the standard formula but magic str is % based
-		baseMax := int(math.Floor(float64(effectiveStr)*(float64(strBonus)+64.0)/640.0)) + 1
-		// Apply magic damage bonus as percentage
-		if bonuses.MagicStr > 0 {
-			baseMax = int(math.Floor(float64(baseMax) * (1.0 + float64(bonuses.MagicStr)/100.0)))
-		}
-		return baseMax
-	}
-
 	return int(math.Floor(float64(effectiveStr)*(float64(strBonus)+64.0)/640.0)) + 1
 }
 
@@ -298,12 +284,8 @@ func applySpecialModifiers(maxHit int, accuracy float64, weapon *data.Equipment,
 
 	// Scythe of vitur: 3 hitsplats (100%, 50%, 25%) on large monsters
 	// We handle this by increasing effective max hit
-	if strings.Contains(name, "scythe of vitur") && monster.Size >= 2 {
-		// Average across 3 hitsplats: max_hit * (1 + 0.5 + 0.25) = 1.75x effective
-		maxHit = int(math.Floor(float64(maxHit) * 1.75))
-	} else if strings.Contains(name, "scythe of vitur") {
-		// Size 1: only first hit lands
-		// Keep maxHit as is
+	if strings.Contains(name, "scythe of vitur") {
+		maxHit = int(math.Floor(float64(maxHit) * scytheDamageMultiplier(monster.Size)))
 	}
 
 	// Twisted bow: accuracy and damage scale with monster's magic level
@@ -342,6 +324,49 @@ func applySpecialModifiers(maxHit int, accuracy float64, weapon *data.Equipment,
 	// Salve amulet / slayer helm bonuses for undead/task — skip for simplicity
 
 	return maxHit, accuracy
+}
+
+func calcMagicMaxHit(stats PlayerStats, bonuses TotalEquipmentBonuses, weapon *data.Equipment) int {
+	baseMax := poweredStaffBaseMaxHit(stats.Magic, weapon)
+	if baseMax == 0 {
+		// Fallback for unhandled magic weapons.
+		baseMax = max(1, stats.Magic/3-5)
+	}
+
+	maxHit := int(math.Floor(float64(baseMax) * (1.0 + float64(bonuses.MagicStr)/100.0)))
+	if maxHit < 1 {
+		return 1
+	}
+	return maxHit
+}
+
+func poweredStaffBaseMaxHit(level int, weapon *data.Equipment) int {
+	if weapon == nil {
+		return 0
+	}
+
+	name := strings.ToLower(strings.TrimSpace(weapon.Name))
+	switch {
+	case strings.Contains(name, "sanguinesti staff"):
+		return max(5, level/3-1)
+	case strings.Contains(name, "trident of the swamp"):
+		return max(4, level/3-2)
+	case strings.Contains(name, "trident of the seas"):
+		return max(1, level/3-5)
+	default:
+		return 0
+	}
+}
+
+func scytheDamageMultiplier(size int) float64 {
+	switch {
+	case size >= 3:
+		return 1.75
+	case size == 2:
+		return 1.5
+	default:
+		return 1.0
+	}
 }
 
 func isVoidSet(gear GearSet) bool {

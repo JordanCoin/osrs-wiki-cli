@@ -19,12 +19,14 @@ Data is downloaded on first use and cached locally.`,
 	Args: cobra.MinimumNArgs(1),
 	Example: `  osrs-wiki monster "Vardorvis"
   osrs-wiki monster "Vorkath"
+  osrs-wiki monster "Vorkath" --version "Dragon Slayer II"
   osrs-wiki monster "General Graardor"
   osrs-wiki monster "Vardorvis" --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.Join(args, " ")
+		version, _ := cmd.Flags().GetString("version")
 
-		monster, err := data.FindMonster(name)
+		monster, err := data.FindMonsterVersion(name, version)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 			os.Exit(3)
@@ -70,4 +72,8 @@ Data is downloaded on first use and cached locally.`,
 
 		return nil
 	},
+}
+
+func init() {
+	monsterCmd.Flags().String("version", "", "Specific monster version, e.g. Post-quest or Awakened")
 }

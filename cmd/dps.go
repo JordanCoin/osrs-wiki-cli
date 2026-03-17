@@ -23,6 +23,7 @@ Available presets: max-melee, max-range, max-mage, mid-melee, mid-range, void-ra
 Use --weapon to override just the weapon in any preset.
 Use --compare to compare multiple weapons side by side.`,
 	Example: `  osrs-wiki dps --preset max-melee --monster "Vardorvis"
+  osrs-wiki dps --preset max-melee --monster "Vardorvis" --version "Awakened"
   osrs-wiki dps --preset max-melee --weapon "Ghrazi rapier" --monster "Vardorvis"
   osrs-wiki dps --compare "Scythe of vitur,Ghrazi rapier" --preset max-melee --monster "Vardorvis"
   osrs-wiki dps --preset max-range --monster "Vorkath"
@@ -45,6 +46,7 @@ func runDPS(cmd *cobra.Command, args []string) error {
 
 	presetName, _ := cmd.Flags().GetString("preset")
 	monsterName, _ := cmd.Flags().GetString("monster")
+	monsterVersion, _ := cmd.Flags().GetString("version")
 	weaponOverride, _ := cmd.Flags().GetString("weapon")
 	compareStr, _ := cmd.Flags().GetString("compare")
 
@@ -63,7 +65,7 @@ func runDPS(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	monster, err := data.FindMonster(monsterName)
+	monster, err := data.FindMonsterVersion(monsterName, monsterVersion)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(3)
@@ -163,6 +165,7 @@ func printDPSResult(result *dps.DPSResult, monster *data.Monster) {
 func init() {
 	dpsCmd.Flags().String("preset", "", "Equipment preset (max-melee, max-range, max-mage, mid-melee, mid-range, void-range)")
 	dpsCmd.Flags().String("monster", "", "Monster name to calculate DPS against")
+	dpsCmd.Flags().String("version", "", "Specific monster version, e.g. Post-quest or Awakened")
 	dpsCmd.Flags().String("weapon", "", "Override the preset weapon")
 	dpsCmd.Flags().String("compare", "", "Comma-separated weapon names to compare")
 	dpsCmd.Flags().Bool("presets", false, "List all available presets")

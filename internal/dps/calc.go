@@ -248,6 +248,21 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		}
 	}
 
+	// Confliction gauntlets + magic + 1H weapon
+	if style == StyleMagic && ctx.wearing("Confliction gauntlets") && weapon != nil && !weapon.IsTwoHanded {
+		singleRoll := getNormalAccuracyRoll(atkRoll, defRoll)
+		doubleRoll := getFangAccuracyRoll(atkRoll, defRoll)
+		accuracy = doubleRoll / (1.0 + doubleRoll - singleRoll)
+	}
+
+	// Tome of water + water/bind spell: *6/5 accuracy
+	if style == StyleMagic && ctx.wearing("Tome of water") {
+		element := SpellElement(ctx.Gear.Spell)
+		if element == "water" || ctx.Gear.Spell == "Bind" || ctx.Gear.Spell == "Snare" || ctx.Gear.Spell == "Entangle" {
+			accuracy = getNormalAccuracyRoll(atkRoll*6/5, defRoll)
+		}
+	}
+
 	// Brimstone ring + magic
 	if style == StyleMagic && ctx.wearing("Brimstone ring") {
 		reducedDefRoll := defRoll * 9 / 10
@@ -385,6 +400,41 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		specialHandled = true
 	}
 
+	// Dragon/Crystal halberd spec: 2 hits on large monsters
+	if !specialHandled && ctx.Gear.UseSpec &&
+		(ctx.wearing("Dragon halberd") || ctx.wearing("Crystal halberd")) &&
+		ctx.Monster.Size > 1 {
+		secondAtkRoll := atkRoll * 3 / 4
+		secondAcc := getNormalAccuracyRoll(secondAtkRoll, defRoll)
+		expectedDmg = accuracy*float64(maxHit)/2.0 + secondAcc*float64(maxHit)/2.0
+		specialHandled = true
+	}
+
+	// Webweaver bow: 4 hits at 40% max
+	if !specialHandled && ctx.wearing("Webweaver bow") && ctx.Gear.UseSpec {
+		reducedMax := maxHit * 4 / 10
+		expectedDmg = accuracy * float64(reducedMax) / 2.0 * 4.0
+		specialHandled = true
+	}
+
+	// Abyssal dagger spec: linked accuracy
+	if !specialHandled && ctx.wearing("Abyssal dagger") && ctx.Gear.UseSpec {
+		expectedDmg = AbyssalDaggerExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Saradomin sword spec: melee + magic(1-16)
+	if !specialHandled && ctx.wearing("Saradomin sword") && ctx.Gear.UseSpec {
+		expectedDmg = SaradomSwordExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Granite hammer spec: +5 flat
+	if !specialHandled && ctx.wearing("Granite hammer") && ctx.Gear.UseSpec {
+		expectedDmg = GraniteHammerExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
 	// Dark bow
 	if !specialHandled && ctx.wearing("Dark bow") {
 		dragonArrows := ctx.wearingAny("dragon arrow")
@@ -396,6 +446,16 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 	if !specialHandled && ctx.wearing("Tonalztics of ralos") && style == StyleRanged {
 		expectedDmg = TonalzticsExpectedDmg(accuracy, maxHit)
 		specialHandled = true
+	}
+
+	// Twinflame staff + bolt/blast/wave: double hit
+	if !specialHandled && ctx.wearing("Twinflame staff") && style == StyleMagic {
+		spell := ctx.Gear.Spell
+		if contains(spell, "Bolt", "Blast", "Wave") {
+			secondHit := float64(maxHit) * 4.0 / 10.0
+			expectedDmg = accuracy * (float64(maxHit)/2.0 + secondHit/2.0)
+			specialHandled = true
+		}
 	}
 
 	// Two-hit weapons (Torag's hammers, Sulphur blades, etc.)
@@ -468,6 +528,25 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		vFactor := VampyreDamageModifier(weapon.Name, true)
 		expectedDmg = float64(int(expectedDmg) * vFactor[0] / vFactor[1])
 	}
+
+	// T2 Vampyre + non-vampyrebane + Efaritay's: /2
+	if ctx.monsterHasAttribute("vampyre_2") && ctx.wearing("Efaritay's aid") && !ctx.isWearingVampyrebane() {
+		expectedDmg /= 2
+	}
+
+	// Mark of Darkness + demonbane spell + demon
+	if ctx.Gear.MarkOfDarkness && IsDemonbaneSpell(ctx.Gear.Spell) && ctx.monsterHasAttribute("demon") {
+		vuln := GetDemonbaneVulnerability(ctx.Monster)
+		basePercent := 25
+		if ctx.wearing("Purging staff") {
+			basePercent = 50
+		}
+		bonus := int(expectedDmg) * basePercent / 100 * vuln / 100
+		expectedDmg += float64(bonus)
+	}
+
+	// Royal Titans out of melee range: *6/1 ranged accuracy (already handled)
+	// This is handled in the accuracy section above
 
 	// ── Step 8: DPS ────────────────────────────────────────────────
 	dps := expectedDmg / (float64(atkSpeed) * SecondsPerTick)
@@ -744,7 +823,13 @@ func (ctx *CalcContext) getPlayerMaxMagicAttackRoll() int {
 		effectiveLevel = effectiveLevel * 29 / 20
 	}
 
-	attackRoll := effectiveLevel * (ctx.Bonuses.MagicAtk + 64)
+	// Tumeken's shadow: triples magic attack bonus from gear
+	magicAtkBonus := ctx.Bonuses.MagicAtk
+	if ctx.wearing("Tumeken's shadow") {
+		magicAtkBonus *= 3
+	}
+
+	attackRoll := effectiveLevel * (magicAtkBonus + 64)
 
 	// Salve amulet(ei) + undead: additive +20%
 	if ctx.wearing("Salve amulet(ei)") && ctx.monsterHasAttribute("undead") {
@@ -893,15 +978,33 @@ func (ctx *CalcContext) getPlayerMaxRangedHit() (int, int) {
 func (ctx *CalcContext) getPlayerMaxMagicHit() (int, int) {
 	magicLvl := ctx.Stats.Magic
 
-	// Base max hit depends on weapon
+	// Base max hit: try powered staff first, then spell
 	maxHit := ctx.poweredStaffMaxHit(magicLvl)
+	spellName := ctx.Gear.Spell
+	if maxHit == 0 && spellName != "" {
+		maxHit = SpellMaxHit(spellName, magicLvl)
+	}
 	if maxHit == 0 {
 		return 0, 0
 	}
 
-	// Magic damage bonus
-	// magicDmgBonus is in tenths of percent (e.g., 150 = 15.0%)
+	// Chaos gauntlets: +3 to bolt spells
+	if ctx.wearing("Chaos gauntlets") && IsBoltSpell(spellName) {
+		maxHit += 3
+	}
+
+	// Charge spell + god spell + god cape: +10
+	if ctx.Gear.ChargeSpell && isGodSpell(spellName) {
+		maxHit += 10
+	}
+
+	// Magic damage bonus (in tenths of percent)
 	magicDmgBonus := ctx.Bonuses.MagicStr
+
+	// Tumeken's shadow: triples magic damage bonus from gear
+	if ctx.wearing("Tumeken's shadow") {
+		magicDmgBonus *= 3
+	}
 
 	// Prayer magic damage bonus
 	magicDmgBonus += ctx.Prayer.MagicDmgBonus
@@ -912,24 +1015,47 @@ func (ctx *CalcContext) getPlayerMaxMagicHit() (int, int) {
 	}
 
 	// Smoke battlestaff + standard spellbook: +100 (10.0%)
-	if ctx.wearing("Smoke battlestaff") || ctx.wearing("Mystic smoke staff") {
+	if (ctx.wearing("Smoke battlestaff") || ctx.wearing("Mystic smoke staff") || ctx.wearing("Twinflame staff")) && IsStandardSpellbook(spellName) {
 		magicDmgBonus += 100
 	}
 
-	// Apply magic damage bonus: maxHit = trunc(maxHit + trunc(maxHit * bonus / 1000))
+	// Apply magic damage bonus
 	maxHit = maxHit + maxHit*magicDmgBonus/1000
 
-	// Black mask (i) / slayer helm (i) for magic: * 23/20
+	// Black mask (i) / slayer helm (i): * 23/20
 	if (ctx.wearing("Slayer helmet (i)") || ctx.wearing("Black mask (i)")) && ctx.isOnSlayerTask() {
 		maxHit = maxHit * 23 / 20
 	}
 
-	// Tome of fire + fire spell: * 11/10
-	if ctx.wearing("Tome of fire") {
+	// Spell element weakness damage bonus
+	if spellName != "" && ctx.Monster.Weakness != nil {
+		element := SpellElement(spellName)
+		bonus := SpellElementWeaknessBonus(maxHit, ctx.Monster, element)
+		maxHit += bonus
+	}
+
+	// Sunfire runes: minHit = trunc(maxHit / 10)
+	minHit := 0
+	if ctx.Gear.SunfireRunes {
+		minHit = maxHit / 10
+	}
+
+	// Tome bonuses: fire/water/earth * 11/10
+	if ctx.wearing("Tome of fire") && SpellElement(spellName) == "fire" {
+		maxHit = maxHit * 11 / 10
+	}
+	if ctx.wearing("Tome of water") && SpellElement(spellName) == "water" {
+		maxHit = maxHit * 11 / 10
+	}
+	if ctx.wearing("Tome of earth") && SpellElement(spellName) == "earth" {
 		maxHit = maxHit * 11 / 10
 	}
 
-	return 0, maxHit
+	return minHit, maxHit
+}
+
+func isGodSpell(name string) bool {
+	return name == "Saradomin Strike" || name == "Claws of Guthix" || name == "Flames of Zamorak"
 }
 
 func (ctx *CalcContext) poweredStaffMaxHit(magicLevel int) int {
@@ -1073,6 +1199,11 @@ func (ctx *CalcContext) countInquisitorPieces() int {
 		count++
 	}
 	return count
+}
+
+func (ctx *CalcContext) isWearingVampyrebane() bool {
+	return ctx.wearing("Ivandis flail") || ctx.wearing("Blisterwood flail") ||
+		ctx.wearing("Blisterwood sickle") || ctx.wearing("Rod of ivandis")
 }
 
 func (ctx *CalcContext) isWearingRatBoneWeapon() bool {

@@ -9,7 +9,7 @@ func SetVersion(v string) { appVersion = v }
 
 var rootCmd = &cobra.Command{
 	Use:   "osrs-wiki",
-	Short: "OSRS Wiki CLI — item images, prices, and search",
+	Short: "OSRS Wiki CLI — item images, prices, DPS calculator, and search",
 	Long: `Look up Old School RuneScape items on the OSRS Wiki.
 Get correct image URLs, Grand Exchange prices, and item details.
 
@@ -26,6 +26,8 @@ func init() {
 	rootCmd.AddCommand(itemCmd)
 	rootCmd.AddCommand(wikiCmd)
 	rootCmd.AddCommand(guideCmd)
+	rootCmd.AddCommand(monsterCmd)
+	rootCmd.AddCommand(dpsCmd)
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version",

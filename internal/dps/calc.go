@@ -170,11 +170,25 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		}
 	}
 
+	// Check immunity first
+	if IsImmune(monster, style, weapon) {
+		return &DPSResult{
+			Weapon:    weapon.Name,
+			Style:     style,
+			Prayer:    prayer.Name,
+			Accuracy:  0,
+			DPS:       0,
+			TTKString: "immune",
+			MonsterHP: monster.Skills.HP,
+			AtkSpeed:  weapon.Speed,
+		}, nil
+	}
+
 	atkRoll := ctx.getPlayerMaxAttackRoll()
 	defRoll := ctx.getNPCDefenceRoll()
 	accuracy := getNormalAccuracyRoll(atkRoll, defRoll)
 
-	// Fang accuracy override
+	// Fang accuracy override (stab style)
 	if ctx.wearing("Osmumten's fang") || ctx.wearing("Osmumten's fang (or)") {
 		if style == StyleStab {
 			accuracy = getFangAccuracyRoll(atkRoll, defRoll)
@@ -188,9 +202,28 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		atkSpeed = 4
 	}
 
-	// DPS = (accuracy * (maxHit + minHit) / 2) / (atkSpeed * 0.6)
+	// Apply scythe multi-hitsplat
+	if ctx.wearing("Scythe of vitur") || ctx.wearingAny("of vitur") {
+		maxHit = ScytheExpectedMax(maxHit, monster.Size)
+	}
+
+	// Apply Dharok's set effect
+	if ctx.isWearingDharok() {
+		maxHit = DharokMaxHit(maxHit, ctx.Stats.Hitpoints, 1) // assume 1 HP for max DPS
+	}
+
+	// Base DPS
 	expectedHit := accuracy * float64(maxHit+minHit) / 2.0
 	dps := expectedHit / (float64(atkSpeed) * SecondsPerTick)
+
+	// Apply Verac's set effect
+	if ctx.isWearingVeracs() {
+		dps = VeracExpectedDPS(accuracy, maxHit, atkSpeed)
+	}
+
+	// Apply NPC transforms (Zulrah cap, Verzik P1, Tekton, Corp, etc.)
+	expectedDmg := ApplyNPCTransform(accuracy*float64(maxHit+minHit)/2.0, monster, style, weapon)
+	dps = expectedDmg / (float64(atkSpeed) * SecondsPerTick)
 
 	ttkTicks := 0
 	if dps > 0 {
@@ -801,6 +834,16 @@ func (ctx *CalcContext) countInquisitorPieces() int {
 		count++
 	}
 	return count
+}
+
+func (ctx *CalcContext) isWearingDharok() bool {
+	return ctx.wearing("Dharok's greataxe") && ctx.wearing("Dharok's helm") &&
+		ctx.wearing("Dharok's platebody") && ctx.wearing("Dharok's platelegs")
+}
+
+func (ctx *CalcContext) isWearingVeracs() bool {
+	return ctx.wearing("Verac's flail") && ctx.wearing("Verac's helm") &&
+		ctx.wearing("Verac's brassard") && ctx.wearing("Verac's plateskirt")
 }
 
 func (ctx *CalcContext) countCrystalPieces() int {

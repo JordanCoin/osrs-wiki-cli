@@ -375,38 +375,14 @@ func isCorpbaneWeapon(weapon *data.Equipment, style CombatStyle) bool {
 }
 
 func isImmuneToMagic(m *data.Monster) bool {
-	// Specific NPC IDs that are immune to magic
-	immuneIDs := []int{
-		2042, 2044, // Zulrah (ranged/melee phases)
-	}
-	for _, id := range immuneIDs {
-		if m.ID == id {
-			return true
-		}
-	}
-	return false
+	return ContainsID(ImmuneToMagicDamageIDs, m.ID)
 }
 
 func isImmuneToRanged(m *data.Monster) bool {
-	immuneIDs := []int{
-		2043, // Zulrah (magic phase)
-	}
-	for _, id := range immuneIDs {
-		if m.ID == id {
-			return true
-		}
-	}
-	return false
+	return ContainsID(ImmuneToRangedDamageIDs, m.ID)
 }
 
 func isImmuneToMelee(m *data.Monster) bool {
-	immuneIDs := []int{
-		2042, 2043, 2044, // Zulrah (all phases)
-	}
-	for _, id := range immuneIDs {
-		if m.ID == id {
-			return true
-		}
-	}
-	return false
+	return ContainsID(ImmuneToMeleeDamageIDs, m.ID) ||
+		ContainsID(ImmuneToNonSalamanderMeleeIDs, m.ID)
 }

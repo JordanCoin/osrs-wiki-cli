@@ -356,20 +356,7 @@ func (ctx *CalcContext) getNPCDefenceRoll() int {
 // usesDefLevelForMagicDef checks if a monster uses defence level instead of magic
 // level for magic defence calculations.
 func usesDefLevelForMagicDef(m *data.Monster) bool {
-	// Ice demon, Verzik (all forms), Fragment of Seren, specific baboons, rabbit
-	defLevelIDs := []int{
-		7584, 7585, // Ice Demon
-		8369, 8370, 8371, 8372, 8373, 8374, 8375, // Verzik
-		9466, // Fragment of Seren
-		11709, 11712, // Baboon Brawler
-		9118, // Rabbit (Prifddinas)
-	}
-	for _, id := range defLevelIDs {
-		if m.ID == id {
-			return true
-		}
-	}
-	return false
+	return ContainsID(UsesDefLevelForMagicDefIDs, m.ID)
 }
 
 // ── Player Max Attack Roll ─────────────────────────────────────────

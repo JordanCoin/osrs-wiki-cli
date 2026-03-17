@@ -199,9 +199,9 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 	atkRoll := ctx.getPlayerMaxAttackRoll()
 	defRoll := ctx.getNPCDefenceRoll()
 
-	// ToA defence scaling
-	if IsToAMonster(ctx.Monster.ID) && !IsKephriOverlord(ctx.Monster.ID) {
-		defRoll = ScaleToADefenceRoll(defRoll, 150)
+	// ToA defence scaling — only if invocation level is specified
+	if IsToAMonster(ctx.Monster.ID) && !IsKephriOverlord(ctx.Monster.ID) && ctx.Gear.ToAInvocation > 0 {
+		defRoll = ScaleToADefenceRoll(defRoll, ctx.Gear.ToAInvocation)
 	}
 
 	// ── Step 3: Post-roll accuracy/damage modifiers ────────────────
@@ -246,6 +246,14 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		} else {
 			accuracy = getFangAccuracyRoll(atkRoll, defRoll)
 		}
+	}
+
+	// Clamp accuracy to [0, 1]
+	if accuracy > 1.0 {
+		accuracy = 1.0
+	}
+	if accuracy < 0 {
+		accuracy = 0
 	}
 
 	// Confliction gauntlets + magic + 1H weapon
@@ -1170,21 +1178,34 @@ func (ctx *CalcContext) isOnSlayerTask() bool {
 		ctx.wearing("Black mask") || ctx.wearing("Black mask (i)")
 }
 
+func (ctx *CalcContext) isWearingVoidRobes() bool {
+	return (ctx.wearing("Void knight top") || ctx.wearing("Void knight top (or)") ||
+		ctx.wearing("Elite void top") || ctx.wearing("Elite void top (or)")) &&
+		(ctx.wearing("Void knight robe") || ctx.wearing("Void knight robe (or)") ||
+			ctx.wearing("Elite void robe") || ctx.wearing("Elite void robe (or)")) &&
+		ctx.wearing("Void knight gloves")
+}
+
 func (ctx *CalcContext) isWearingMeleeVoid() bool {
-	return ctx.wearingAny("void") && ctx.wearing("Void melee helm")
+	return ctx.isWearingVoidRobes() &&
+		(ctx.wearing("Void melee helm") || ctx.wearing("Void melee helm (or)"))
 }
 
 func (ctx *CalcContext) isWearingRangedVoid() bool {
-	return ctx.wearingAny("void") && ctx.wearing("Void ranger helm")
+	return ctx.isWearingVoidRobes() &&
+		(ctx.wearing("Void ranger helm") || ctx.wearing("Void ranger helm (or)"))
 }
 
 func (ctx *CalcContext) isWearingEliteRangedVoid() bool {
-	return ctx.wearing("Elite void top") && ctx.wearing("Elite void robe") &&
-		ctx.wearing("Void knight gloves") && ctx.wearing("Void ranger helm")
+	return (ctx.wearing("Elite void top") || ctx.wearing("Elite void top (or)")) &&
+		(ctx.wearing("Elite void robe") || ctx.wearing("Elite void robe (or)")) &&
+		ctx.wearing("Void knight gloves") &&
+		(ctx.wearing("Void ranger helm") || ctx.wearing("Void ranger helm (or)"))
 }
 
 func (ctx *CalcContext) isWearingMagicVoid() bool {
-	return ctx.wearingAny("void") && ctx.wearing("Void mage helm")
+	return ctx.isWearingVoidRobes() &&
+		(ctx.wearing("Void mage helm") || ctx.wearing("Void mage helm (or)"))
 }
 
 func (ctx *CalcContext) countInquisitorPieces() int {

@@ -85,6 +85,16 @@ func runDPS(cmd *cobra.Command, args []string) error {
 		os.Exit(3)
 	}
 
+	// Apply flags to preset
+	invocation, _ := cmd.Flags().GetInt("invocation")
+	spellName, _ := cmd.Flags().GetString("spell")
+	if invocation > 0 {
+		preset.ToAInvocation = invocation
+	}
+	if spellName != "" {
+		preset.Spell = spellName
+	}
+
 	stats := dps.MaxedStats()
 
 	// Compare mode
@@ -162,8 +172,12 @@ func runCompare(preset dps.GearSet, weapons []string, monster *data.Monster, sta
 	if len(results) >= 2 {
 		best := results[0]
 		second := results[1]
-		pctBetter := (best.Result.DPS - second.Result.DPS) / second.Result.DPS * 100
-		fmt.Printf("  Winner: %s (+%.1f%%)\n", best.Result.Weapon, pctBetter)
+		if second.Result.DPS > 0 {
+			pctBetter := (best.Result.DPS - second.Result.DPS) / second.Result.DPS * 100
+			fmt.Printf("  Winner: %s (+%.1f%%)\n", best.Result.Weapon, pctBetter)
+		} else {
+			fmt.Printf("  Winner: %s\n", best.Result.Weapon)
+		}
 	}
 
 	return nil
@@ -177,11 +191,13 @@ func printDPSResult(result *dps.DPSResult, monster *data.Monster) {
 }
 
 func init() {
-	dpsCmd.Flags().String("preset", "", "Equipment preset (max-melee, max-range, max-mage, mid-melee, mid-range, void-range)")
+	dpsCmd.Flags().String("preset", "", "Equipment preset (use --presets to list all)")
 	dpsCmd.Flags().String("monster", "", "Monster name to calculate DPS against")
 	dpsCmd.Flags().String("version", "", "Specific monster version, e.g. Post-quest or Awakened")
 	dpsCmd.Flags().String("weapon", "", "Override the preset weapon")
 	dpsCmd.Flags().String("compare", "", "Comma-separated weapon names to compare")
 	dpsCmd.Flags().Bool("presets", false, "List all available presets")
 	dpsCmd.Flags().String("bis", "", "Auto-compute BiS gear from equipment data (melee, ranged, magic)")
+	dpsCmd.Flags().Int("invocation", 0, "ToA invocation level (0-600)")
+	dpsCmd.Flags().String("spell", "", "Spell name for manual casting (e.g. 'Ice Barrage')")
 }

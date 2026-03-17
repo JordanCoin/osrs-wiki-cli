@@ -9,41 +9,16 @@ import (
 
 // ── Tombs of Amascut ───────────────────────────────────────────────
 
-// ToA monster IDs (from constants.ts TOMBS_OF_AMASCUT_MONSTER_IDS)
-var toaMonsterIDs = []int{
-	11706, 11707, 11708, 11709, 11710, 11711, 11712, // Baboons
-	11713, 11714, 11715, 11716, 11717, 11718, 11719, // More baboons
-	11730, 11731, 11732, 11733, // Kephri
-	11749, 11750, 11751, 11752, 11753, 11754, 11755, // Akkha
-	11756, 11757, 11758, 11759, 11760, 11761, 11762, // Ba-Ba
-	11763, 11764, 11765, 11766, 11767, 11768, 11769, // Zebak
-	11770, 11771, 11772, 11773, 11774, 11775, 11776, // Wardens P1
-	11777, 11778, 11779, 11780, 11781, 11782, 11783, // Wardens P2
-	11784, 11785, 11786, 11787, 11788, 11789, 11790, // Wardens P3
-	11791, 11792, 11793, 11794, 11795, 11796, 11797, // More wardens
-}
-
-// Kephri overlord IDs (excluded from ToA defence scaling)
-var kephriOverlordIDs = []int{11731, 11732}
-
 // IsToAMonster checks if a monster is from Tombs of Amascut.
+// Uses the canonical ID list from constants.go.
 func IsToAMonster(id int) bool {
-	for _, mid := range toaMonsterIDs {
-		if id == mid {
-			return true
-		}
-	}
-	return false
+	return ContainsID(ToAMonsterIDs, id)
 }
 
 // IsKephriOverlord checks if a monster is a Kephri overlord.
+// Uses the canonical ID list from constants.go.
 func IsKephriOverlord(id int) bool {
-	for _, mid := range kephriOverlordIDs {
-		if id == mid {
-			return true
-		}
-	}
-	return false
+	return ContainsID(KephriOverlordIDs, id)
 }
 
 // ScaleToADefenceRoll scales a ToA monster's defence roll based on invocation level.

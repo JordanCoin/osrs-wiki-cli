@@ -1,5 +1,7 @@
 package dps
 
+import "sort"
+
 // GearSet defines equipment for all slots.
 type GearSet struct {
 	Name         string
@@ -15,11 +17,12 @@ type GearSet struct {
 	Hands        string
 	Feet         string
 	Ring         string
-	UseSpec        bool   // whether to calculate using special attack
-	Spell          string // spell name for manual casting
-	ChargeSpell    bool   // whether Charge spell is active (god spells)
-	SunfireRunes   bool   // whether using sunfire runes
-	MarkOfDarkness bool   // whether Mark of Darkness is active
+	UseSpec          bool   // whether to calculate using special attack
+	Spell            string // spell name for manual casting
+	ChargeSpell      bool   // whether Charge spell is active (god spells)
+	SunfireRunes     bool   // whether using sunfire runes
+	MarkOfDarkness   bool   // whether Mark of Darkness is active
+	ToAInvocation    int    // ToA invocation level (0-600, 0 = no scaling)
 }
 
 // GearSlots returns a map of slot name to item name for iteration.
@@ -222,5 +225,6 @@ func PresetNames() []string {
 	for name := range Presets {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }

@@ -4,6 +4,7 @@ package dps
 // Scans equipment.json to find the highest offensive bonus items per slot.
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/JordanCoin/osrs-wiki-cli/internal/data"
@@ -29,6 +30,8 @@ func FindBiSGear(style string) (GearSet, error) {
 	case "magic":
 		gear.Name = "Computed BiS Magic"
 		gear = findBiSMagic(equipment, gear)
+	default:
+		return GearSet{}, fmt.Errorf("unknown style '%s' — use melee, ranged, or magic", style)
 	}
 
 	return gear, nil
@@ -73,23 +76,21 @@ func findBiSMelee(equipment []data.Equipment, gear GearSet) GearSet {
 			continue
 		}
 
-		// For 2H weapons, don't also set shield
-		if e.IsTwoHanded && slot == "weapon" {
-			if best, ok := bestPerSlot["weapon"]; !ok || score > best.score {
-				bestPerSlot["weapon"] = struct {
-					name  string
-					score int
-				}{name, score}
-				delete(bestPerSlot, "shield") // clear shield for 2H
-			}
-			continue
-		}
-
 		if best, ok := bestPerSlot[slot]; !ok || score > best.score {
 			bestPerSlot[slot] = struct {
 				name  string
 				score int
 			}{name, score}
+		}
+	}
+
+	// If best weapon is 2H, clear shield
+	if best, ok := bestPerSlot["weapon"]; ok {
+		for _, e := range equipment {
+			if e.Name == best.name && e.IsTwoHanded {
+				delete(bestPerSlot, "shield")
+				break
+			}
 		}
 	}
 

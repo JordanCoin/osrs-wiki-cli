@@ -43,27 +43,51 @@ func EnsureFile(name, url string) (string, error) {
 
 	fmt.Fprintf(os.Stderr, "Downloading %s...\n", name)
 	client := &http.Client{Timeout: 60 * time.Second}
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		if info != nil {
+			fmt.Fprintf(os.Stderr, "Warning: using stale cache for %s\n", name)
+			return path, nil
+		}
+		return "", fmt.Errorf("cannot create request: %w", err)
+	}
 	req.Header.Set("User-Agent", "osrs-wiki-cli (github.com/JordanCoin/osrs-wiki-cli)")
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if info != nil {
+			fmt.Fprintf(os.Stderr, "Warning: offline, using stale cache for %s\n", name)
+			return path, nil
+		}
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
+		if info != nil {
+			fmt.Fprintf(os.Stderr, "Warning: HTTP %d, using stale cache for %s\n", resp.StatusCode, name)
+			return path, nil
+		}
 		return "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
 	}
 
-	f, err := os.Create(path)
+	// Atomic download: write to temp file, rename on success
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return "", fmt.Errorf("cannot write cache file: %w", err)
 	}
-	defer f.Close()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("download incomplete: %w", err)
+	}
+	f.Close()
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("cannot finalize cache file: %w", err)
 	}
 
 	return path, nil

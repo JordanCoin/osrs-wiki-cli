@@ -385,7 +385,7 @@ func IsImmune(monster *data.Monster, style CombatStyle, weapon *data.Equipment) 
 	}
 
 	// Melee immune NPCs
-	if (style == StyleStab || style == StyleSlash || style == StyleCrush) && isImmuneToMelee(monster) {
+	if (style == StyleStab || style == StyleSlash || style == StyleCrush) && isImmuneToMelee(monster, weapon) {
 		return true
 	}
 
@@ -435,7 +435,16 @@ func isImmuneToRanged(m *data.Monster) bool {
 	return ContainsID(ImmuneToRangedDamageIDs, m.ID)
 }
 
-func isImmuneToMelee(m *data.Monster) bool {
-	return ContainsID(ImmuneToMeleeDamageIDs, m.ID) ||
-		ContainsID(ImmuneToNonSalamanderMeleeIDs, m.ID)
+func isImmuneToMelee(m *data.Monster, weapon *data.Equipment) bool {
+	if ContainsID(ImmuneToMeleeDamageIDs, m.ID) {
+		return true
+	}
+	// Non-salamander melee immunity: salamanders bypass this
+	if ContainsID(ImmuneToNonSalamanderMeleeIDs, m.ID) {
+		if weapon != nil && strings.Contains(strings.ToLower(weapon.Name), "salamander") {
+			return false
+		}
+		return true
+	}
+	return false
 }

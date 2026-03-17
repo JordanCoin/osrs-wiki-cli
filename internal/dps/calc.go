@@ -231,6 +231,15 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 	// ── Step 4: Max hit ────────────────────────────────────────────
 	minHit, maxHit := ctx.getPlayerMaxHit()
 
+	// Soulreaper axe: 5 stacks = +30% accuracy and damage
+	if ctx.wearing("Soulreaper axe") {
+		stacks := 5 // assume max stacks for DPS calc
+		soulFactor := Factor{100 + 6*stacks, 100}
+		maxHit = ApplyFactor(maxHit, soulFactor)
+		atkRoll = ApplyFactor(atkRoll, soulFactor)
+		accuracy = getNormalAccuracyRoll(atkRoll, defRoll)
+	}
+
 	// Rev weapon buff (wilderness, charged)
 	if ctx.isRevWeaponApplicable() {
 		revFactor := RevWeaponFactor()

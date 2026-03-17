@@ -50,8 +50,10 @@ func runDPS(cmd *cobra.Command, args []string) error {
 	weaponOverride, _ := cmd.Flags().GetString("weapon")
 	compareStr, _ := cmd.Flags().GetString("compare")
 
-	if presetName == "" {
-		fmt.Fprintln(os.Stderr, "Error: --preset is required. Use --presets to list available presets.")
+	bisStyle, _ := cmd.Flags().GetString("bis")
+
+	if presetName == "" && bisStyle == "" {
+		fmt.Fprintln(os.Stderr, "Error: --preset or --bis is required. Use --presets to list presets, or --bis melee/ranged/magic for auto BiS.")
 		os.Exit(1)
 	}
 	if monsterName == "" {
@@ -59,10 +61,22 @@ func runDPS(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 
-	preset, ok := dps.Presets[presetName]
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Error: unknown preset '%s'. Use --presets to list available presets.\n", presetName)
-		os.Exit(1)
+	var preset dps.GearSet
+	if bisStyle != "" {
+		// Auto-compute BiS gear from equipment data
+		var err error
+		preset, err = dps.FindBiSGear(bisStyle)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error computing BiS gear: %s\n", err)
+			os.Exit(1)
+		}
+	} else {
+		var ok bool
+		preset, ok = dps.Presets[presetName]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: unknown preset '%s'. Use --presets to list available presets.\n", presetName)
+			os.Exit(1)
+		}
 	}
 
 	monster, err := data.FindMonsterVersion(monsterName, monsterVersion)
@@ -169,4 +183,5 @@ func init() {
 	dpsCmd.Flags().String("weapon", "", "Override the preset weapon")
 	dpsCmd.Flags().String("compare", "", "Comma-separated weapon names to compare")
 	dpsCmd.Flags().Bool("presets", false, "List all available presets")
+	dpsCmd.Flags().String("bis", "", "Auto-compute BiS gear from equipment data (melee, ranged, magic)")
 }

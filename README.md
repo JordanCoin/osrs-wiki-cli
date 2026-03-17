@@ -113,9 +113,59 @@ osrs-wiki image "Twisted Bow" --json
 # }
 ```
 
+## DPS Calculator
+
+Full combat DPS calculator ported 1-to-1 from the [OSRS Wiki DPS Calculator](https://github.com/weirdgloop/osrs-dps-calc) by [Weird Gloop](https://weirdgloop.org/). Uses the same monster and equipment datasets, same integer arithmetic, same formulas.
+
+```bash
+# Basic DPS calculation
+osrs-wiki dps --preset max-melee --monster "Vardorvis"
+
+# Compare weapons
+osrs-wiki dps --compare "Soulreaper axe,Scythe of vitur,Ghrazi rapier" --preset max-melee --monster "Vardorvis"
+
+# Auto-compute BiS gear from equipment data
+osrs-wiki dps --bis melee --monster "Vorkath"
+
+# Override weapon in a preset
+osrs-wiki dps --preset max-melee --weapon "Osmumten's fang" --monster "Vardorvis"
+
+# ToA with invocation level
+osrs-wiki dps --preset max-melee --monster "Ba-Ba" --invocation 300
+
+# Monster stats lookup
+osrs-wiki monster "Vardorvis"
+osrs-wiki monster "Vorkath" --version "Post-quest"
+```
+
+### What's implemented
+
+The DPS calculator covers the full scope of the TypeScript source (~3,600 lines of Go):
+
+- **Accuracy**: standard, Osmumten's fang double-roll, Confliction gauntlets, Brimstone ring, Titan Elemental
+- **Attack rolls**: melee/ranged/magic with all prayer factors, void, salve, slayer helm, dragon hunter, arclight, inquisitor's, crystal bow/bowfa, twisted bow, Tumeken's shadow
+- **Max hits**: all powered staff formulas, every spell (standard, ancient, arceuus), chaos gauntlets, charge spell, sunfire runes, tome bonuses, smoke staff, magic damage bonus system
+- **Special weapons**: scythe multi-hitsplat, Dharok, Verac, Keris proc, Soulreaper stacks, Blood Moon, obsidian set, berserker necklace, colossal blade, leaf-bladed battleaxe
+- **Bolt effects**: ruby, diamond, opal, pearl, dragonstone, onyx (with ZCB and Kandarin diary)
+- **Special attacks**: dragon claws (4-roll split), burning claws, dark bow, dragon halberd, webweaver, abyssal dagger, saradomin sword, granite hammer, tonalztics, voidwaker, abyssal bludgeon
+- **NPC transforms**: Zulrah cap, Verzik P1, Tekton, Corporeal Beast, Olm, Ice Demon, Nightmare totems, Hueycoatl, Abyssal Sire, Tormented Demon, Slagilith, flat armour
+- **Raid scaling**: ToA invocation level, CoX party size + CM, ToB party size, Vardorvis HP-dependent defence
+- **Immunity**: full melee/ranged/magic immunity lists with salamander exceptions, aviansie, vampyre tiers
+- **Monster data**: 2,915 monsters + 5,246 equipment pieces from weirdgloop CDN, cached locally
+
+### Data sources
+
+Monster stats and equipment data are downloaded from the [weirdgloop/osrs-dps-calc](https://github.com/weirdgloop/osrs-dps-calc) CDN — the same dataset that powers [dps.osrs.wiki](https://dps.osrs.wiki). Data is cached at `~/.osrs-wiki/data/` and refreshed weekly.
+
+## Credits
+
+- **[Weird Gloop](https://weirdgloop.org/)** and the [OSRS Wiki DPS Calculator](https://github.com/weirdgloop/osrs-dps-calc) — all DPS formulas, monster data, and equipment data are from their open-source calculator. This CLI would not exist without their work. The DPS calculation engine is a direct Go port of their TypeScript source.
+- **[OSRS Wiki](https://oldschool.runescape.wiki/)** — item images, prices, guides, and page content via the MediaWiki API.
+- **[Jagex](https://www.jagex.com/)** — Old School RuneScape.
+
 ## Why This Exists
 
-LLMs guess wiki image URLs and get them wrong — wrong capitalization, missing `_detail`, wrong file extension. This CLI uses the MediaWiki API to always return the correct URL. It also gives the model access to real wiki content instead of relying on stale training data.
+LLMs guess wiki image URLs and get them wrong — wrong capitalization, missing `_detail`, wrong file extension. This CLI uses the MediaWiki API to always return the correct URL. It also gives the model access to real wiki content and accurate DPS calculations instead of relying on stale training data.
 
 ## License
 

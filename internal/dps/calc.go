@@ -143,6 +143,7 @@ type CalcContext struct {
 }
 
 // Calculate computes DPS for a gear set against a monster.
+// Follows the same order of operations as TypeScript PlayerVsNPCCalc.
 func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResult, error) {
 	bonuses, weapon, err := resolveGearBonuses(gear)
 	if err != nil {
@@ -154,80 +155,237 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 
 	style, prayer := determineCombatParams(gear, weapon)
 
+	// Apply Vardorvis HP-dependent stat scaling
+	scaledMonster := ApplyVardorvisScaling(monster, -1) // -1 = full HP
+
 	ctx := &CalcContext{
 		Stats:   stats,
 		Bonuses: bonuses,
 		Weapon:  weapon,
 		Gear:    gear,
-		Monster: monster,
+		Monster: &scaledMonster,
 		Prayer:  prayer,
 		Style:   style,
 	}
-	// Build lowercase item list
-	for _, name := range gear.GearSlots() {
+	// Build lowercase item list for wearing() checks
+	for slot, name := range gear.GearSlots() {
+		_ = slot
 		if name != "" {
 			ctx.AllItems = append(ctx.AllItems, strings.ToLower(name))
 		}
 	}
 
-	// Check immunity first
+	// ── Step 0: Immunity check ─────────────────────────────────────
 	if IsImmune(monster, style, weapon) {
 		return &DPSResult{
-			Weapon:    weapon.Name,
-			Style:     style,
-			Prayer:    prayer.Name,
-			Accuracy:  0,
-			DPS:       0,
-			TTKString: "immune",
-			MonsterHP: monster.Skills.HP,
-			AtkSpeed:  weapon.Speed,
+			Weapon: weapon.Name, Style: style, Prayer: prayer.Name,
+			TTKString: "immune", MonsterHP: monster.Skills.HP,
+			AtkSpeed: max(weapon.Speed, 4),
 		}, nil
 	}
 
+	// ── Step 1: One-hit monsters ───────────────────────────────────
+	if ContainsID(OneHitMonsters, monster.ID) {
+		return &DPSResult{
+			Weapon: weapon.Name, Style: style, Prayer: prayer.Name,
+			MaxHit: monster.Skills.HP, Accuracy: 100.0,
+			DPS: float64(monster.Skills.HP) / (float64(max(weapon.Speed, 4)) * SecondsPerTick),
+			TTKTicks: max(weapon.Speed, 4), TTKString: formatTTK(max(weapon.Speed, 4)),
+			MonsterHP: monster.Skills.HP, AtkSpeed: max(weapon.Speed, 4),
+		}, nil
+	}
+
+	// ── Step 2: Attack and defence rolls ───────────────────────────
 	atkRoll := ctx.getPlayerMaxAttackRoll()
 	defRoll := ctx.getNPCDefenceRoll()
+
+	// ToA defence scaling
+	if IsToAMonster(monster.ID) && !IsKephriOverlord(monster.ID) {
+		// Default invocation level 150 if not specified
+		defRoll = ScaleToADefenceRoll(defRoll, 150)
+	}
+
+	// ── Step 3: Accuracy ───────────────────────────────────────────
 	accuracy := getNormalAccuracyRoll(atkRoll, defRoll)
 
-	// Fang accuracy override (stab style)
-	if ctx.wearing("Osmumten's fang") || ctx.wearing("Osmumten's fang (or)") {
-		if style == StyleStab {
+	// Guaranteed accuracy monsters
+	if ContainsID(GuaranteedAccuracyMonsters, monster.ID) {
+		accuracy = 1.0
+	}
+
+	// P2 Wardens: always 100% accuracy
+	if ContainsID(P2WardenIDs, monster.ID) {
+		accuracy = 1.0
+	}
+
+	// Fang accuracy override (stab style, non-ToA)
+	if ctx.isWearingFang() && style == StyleStab {
+		if IsToAMonster(monster.ID) {
+			// In ToA: 1 - (1-accuracy)^2
+			accuracy = 1.0 - (1.0-accuracy)*(1.0-accuracy)
+		} else {
 			accuracy = getFangAccuracyRoll(atkRoll, defRoll)
 		}
 	}
 
+	// ── Step 4: Max hit ────────────────────────────────────────────
 	minHit, maxHit := ctx.getPlayerMaxHit()
 
+	// Rev weapon buff (wilderness, charged)
+	if ctx.isRevWeaponApplicable() {
+		revFactor := RevWeaponFactor()
+		maxHit = ApplyFactor(maxHit, revFactor)
+		atkRoll = ApplyFactor(atkRoll, revFactor)
+		// Recalculate accuracy with boosted attack roll
+		accuracy = getNormalAccuracyRoll(atkRoll, defRoll)
+	}
+
+	// Keris + kalphite
+	if ctx.wearingAny("keris") && ctx.monsterHasAttribute("kalphite") {
+		if ctx.wearing("Keris partisan of breaching") {
+			maxHit = ApplyFactor(maxHit, KerisBreachingFactor())
+			atkRoll = ApplyFactor(atkRoll, KerisBreachingFactor())
+			accuracy = getNormalAccuracyRoll(atkRoll, defRoll)
+		}
+	}
+
+	// ── Step 5: Attack speed ───────────────────────────────────────
 	atkSpeed := weapon.Speed
 	if atkSpeed <= 0 {
 		atkSpeed = 4
 	}
 
-	// Apply scythe multi-hitsplat
-	if ctx.wearing("Scythe of vitur") || ctx.wearingAny("of vitur") {
-		maxHit = ScytheExpectedMax(maxHit, monster.Size)
+	// ── Step 6: Special weapon distributions ───────────────────────
+	var expectedDmg float64
+	specialHandled := false
+
+	// Scythe of vitur: multi-hitsplat
+	if ctx.wearingAny("of vitur") || ctx.wearing("Scythe of vitur") {
+		scytheMax := ScytheExpectedMax(maxHit, monster.Size)
+		expectedDmg = accuracy * float64(scytheMax) / 2.0
+		specialHandled = true
 	}
 
-	// Apply Dharok's set effect
-	if ctx.isWearingDharok() {
-		maxHit = DharokMaxHit(maxHit, ctx.Stats.Hitpoints, 1) // assume 1 HP for max DPS
+	// Dharok's set: scales with missing HP
+	if !specialHandled && ctx.isWearingDharok() {
+		dharokMax := DharokMaxHit(maxHit, ctx.Stats.Hitpoints, 1) // 1 HP for max DPS
+		expectedDmg = accuracy * float64(dharokMax) / 2.0
+		specialHandled = true
 	}
 
-	// Base DPS
-	expectedHit := accuracy * float64(maxHit+minHit) / 2.0
-	dps := expectedHit / (float64(atkSpeed) * SecondsPerTick)
-
-	// Apply Verac's set effect
-	if ctx.isWearingVeracs() {
-		dps = VeracExpectedDPS(accuracy, maxHit, atkSpeed)
+	// Verac's set: 25% ignores defence
+	if !specialHandled && ctx.isWearingVeracs() {
+		expectedDmg = VeracExpectedDPS(accuracy, maxHit, atkSpeed) * float64(atkSpeed) * SecondsPerTick
+		specialHandled = true
 	}
 
-	// Apply NPC transforms (Zulrah cap, Verzik P1, Tekton, Corp, etc.)
-	expectedDmg := ApplyNPCTransform(accuracy*float64(maxHit+minHit)/2.0, monster, style, weapon)
-	dps = expectedDmg / (float64(atkSpeed) * SecondsPerTick)
+	// Dragon claws spec
+	if !specialHandled && ctx.wearing("Dragon claws") && ctx.Gear.UseSpec {
+		expectedDmg = DragonClawsExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
 
+	// Burning claws spec
+	if !specialHandled && ctx.wearing("Burning claws") && ctx.Gear.UseSpec {
+		expectedDmg = BurningClawsExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Dark bow
+	if !specialHandled && ctx.wearing("Dark bow") {
+		dragonArrows := ctx.wearingAny("dragon arrow")
+		expectedDmg = DarkBowExpectedDmg(accuracy, maxHit, dragonArrows)
+		specialHandled = true
+	}
+
+	// Tonalztics of ralos (charged, ranged)
+	if !specialHandled && ctx.wearing("Tonalztics of ralos") && style == StyleRanged {
+		expectedDmg = TonalzticsExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Two-hit weapons (Torag's hammers, Sulphur blades, etc.)
+	if !specialHandled && ctx.isTwoHitWeapon() {
+		expectedDmg = TwoHitExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Dual macuahuitl
+	if !specialHandled && ctx.wearing("Dual macuahuitl") {
+		expectedDmg = DualMacuahuitlExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Keris + kalphite proc (50/51 normal, 1/51 triple)
+	if !specialHandled && ctx.wearingAny("keris") && ctx.monsterHasAttribute("kalphite") {
+		kerisExpectedMax := KerisExpectedMax(maxHit)
+		expectedDmg = accuracy * kerisExpectedMax / 2.0
+		specialHandled = true
+	}
+
+	// Karil's set with Amulet of the Damned
+	if !specialHandled && ctx.isWearingKarils() {
+		expectedDmg = KarilsExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Ahrim's set with Amulet of the Damned
+	if !specialHandled && ctx.isWearingAhrims() {
+		expectedDmg = AhrimsExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Voidwaker spec: guaranteed accuracy, min=max/2
+	if !specialHandled && ctx.wearing("Voidwaker") && ctx.Gear.UseSpec {
+		expectedDmg = VoidwakerExpectedDmg(maxHit)
+		specialHandled = true
+	}
+
+	// P2 Wardens: special min/max calculation
+	if !specialHandled && ContainsID(P2WardenIDs, monster.ID) {
+		wMinHit, wMaxHit := P2WardensModifier(maxHit, atkRoll, defRoll)
+		expectedDmg = float64(wMaxHit+wMinHit) / 2.0 // 100% accuracy
+		minHit = wMinHit
+		maxHit = wMaxHit
+		specialHandled = true
+	}
+
+	// Blood Moon set
+	if !specialHandled && ctx.isWearingBloodMoon() {
+		expectedDmg = BloodMoonExpectedDmg(accuracy, maxHit)
+		specialHandled = true
+	}
+
+	// Standard single-hit distribution
+	if !specialHandled {
+		expectedDmg = accuracy * float64(maxHit+minHit) / 2.0
+	}
+
+	// ── Step 7: NPC transforms (post-roll) ─────────────────────────
+	expectedDmg = ApplyNPCTransform(expectedDmg, monster, style, weapon)
+
+	// Berserker necklace + tzhaar weapon
+	if ctx.isWearingBerserkerNecklace() && ctx.isWearingTzhaarWeapon() {
+		expectedDmg = expectedDmg * 6.0 / 5.0
+	}
+
+	// Vampyre damage with Efaritay's aid
+	if ctx.monsterHasAttribute("vampyre") && ctx.wearing("Efaritay's aid") {
+		vFactor := VampyreDamageModifier(weapon.Name, true)
+		expectedDmg = float64(int(expectedDmg) * vFactor[0] / vFactor[1])
+	}
+
+	// ── Step 8: DPS ────────────────────────────────────────────────
+	dps := expectedDmg / (float64(atkSpeed) * SecondsPerTick)
+
+	// ── Step 9: TTK (use original monster HP, not scaled) ──────────
+	monsterHP := monster.Skills.HP
+	if monsterHP == 0 {
+		monsterHP = scaledMonster.Skills.HP
+	}
 	ttkTicks := 0
 	if dps > 0 {
-		seconds := float64(monster.Skills.HP) / dps
+		seconds := float64(monsterHP) / dps
 		ttkTicks = int(math.Ceil(seconds/SecondsPerTick/float64(atkSpeed))) * atkSpeed
 	}
 
@@ -821,6 +979,49 @@ func (ctx *CalcContext) countInquisitorPieces() int {
 		count++
 	}
 	return count
+}
+
+func (ctx *CalcContext) isWearingFang() bool {
+	return ctx.wearing("Osmumten's fang") || ctx.wearing("Osmumten's fang (or)")
+}
+
+func (ctx *CalcContext) isRevWeaponApplicable() bool {
+	// Rev weapons need wilderness + charged version
+	// CLI doesn't track wilderness state — return false by default
+	// Users can override via preset
+	return false
+}
+
+func (ctx *CalcContext) isTwoHitWeapon() bool {
+	return ctx.wearing("Torag's hammers") || ctx.wearing("Sulphur blades") ||
+		ctx.wearing("Glacial temotli") || ctx.wearing("Earthbound tecpatl")
+}
+
+func (ctx *CalcContext) isWearingKarils() bool {
+	return ctx.wearing("Karil's crossbow") && ctx.wearing("Karil's coif") &&
+		ctx.wearing("Karil's leathertop") && ctx.wearing("Karil's leatherskirt") &&
+		ctx.wearing("Amulet of the damned")
+}
+
+func (ctx *CalcContext) isWearingAhrims() bool {
+	return ctx.wearing("Ahrim's staff") && ctx.wearing("Ahrim's hood") &&
+		ctx.wearing("Ahrim's robetop") && ctx.wearing("Ahrim's robeskirt") &&
+		ctx.wearing("Amulet of the damned")
+}
+
+func (ctx *CalcContext) isWearingBloodMoon() bool {
+	return ctx.wearing("Dual macuahuitl") && ctx.wearing("Blood moon helm") &&
+		ctx.wearing("Blood moon chestplate") && ctx.wearing("Blood moon tassets")
+}
+
+func (ctx *CalcContext) isWearingBerserkerNecklace() bool {
+	return ctx.wearing("Berserker necklace") || ctx.wearing("Berserker necklace (or)")
+}
+
+func (ctx *CalcContext) isWearingTzhaarWeapon() bool {
+	return ctx.wearing("Tzhaar-ket-em") || ctx.wearing("Tzhaar-ket-om") ||
+		ctx.wearing("Tzhaar-ket-om (t)") || ctx.wearing("Toktz-xil-ak") ||
+		ctx.wearing("Toktz-xil-ek") || ctx.wearing("Toktz-mej-tal")
 }
 
 func (ctx *CalcContext) isWearingDharok() bool {

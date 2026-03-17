@@ -94,16 +94,57 @@ func ScaleToBHP(baseHP, partySize int) int {
 	}
 }
 
-// ── Vardorvis Defence Scaling ──────────────────────────────────────
+// ── Vardorvis Scaling ──────────────────────────────────────────────
 
-// Vardorvis defence scales based on current HP percentage.
-// At 100% HP: normal defence. At lower HP: reduced defence.
-// Formula: defRoll * (currentHP / maxHP)
-func ScaleVardorvisDefence(defRoll, currentHP, maxHP int) int {
-	if maxHP <= 0 || currentHP >= maxHP {
-		return defRoll
+// VardorvisScaling holds the HP-dependent stat ranges for Vardorvis.
+type VardorvisScaling struct {
+	MaxHP    int
+	StrRange [2]int // [start at full HP, end at 0 HP]
+	DefRange [2]int // [start at full HP, end at 0 HP]
+}
+
+// GetVardorvisScaling returns the scaling parameters for a Vardorvis version.
+func GetVardorvisScaling(version string) VardorvisScaling {
+	switch version {
+	case "Quest":
+		return VardorvisScaling{MaxHP: 500, StrRange: [2]int{210, 280}, DefRange: [2]int{180, 130}}
+	case "Awakened":
+		return VardorvisScaling{MaxHP: 1400, StrRange: [2]int{391, 522}, DefRange: [2]int{268, 181}}
+	default: // Post-quest
+		return VardorvisScaling{MaxHP: 700, StrRange: [2]int{270, 360}, DefRange: [2]int{215, 145}}
 	}
-	return defRoll * currentHP / maxHP
+}
+
+// ApplyVardorvisScaling applies HP-dependent stat scaling to Vardorvis.
+// At full HP: def = DefRange[0] (e.g., 215 for post-quest).
+// At 0 HP: def = DefRange[1] (e.g., 145 for post-quest).
+// For DPS calculations, we use full HP (worst case defence).
+func ApplyVardorvisScaling(m *data.Monster, currentHP int) data.Monster {
+	if m.Name != "Vardorvis" {
+		return *m
+	}
+
+	scaling := GetVardorvisScaling(m.Version)
+	if currentHP < 0 {
+		currentHP = scaling.MaxHP // default to full HP
+	}
+
+	scaled := *m
+	scaled.Skills.Str = lerp(currentHP, scaling.MaxHP, 0, scaling.StrRange[0], scaling.StrRange[1])
+	scaled.Skills.Def = lerp(currentHP, scaling.MaxHP, 0, scaling.DefRange[0], scaling.DefRange[1])
+	return scaled
+}
+
+// lerp: linear interpolation with integer truncation.
+// lerp(curr, srcStart, srcEnd, dstStart, dstEnd)
+func lerp(curr, srcStart, srcEnd, dstStart, dstEnd int) int {
+	srcRange := srcEnd - srcStart
+	if srcRange == 0 {
+		return dstStart
+	}
+	dstRange := dstEnd - dstStart
+	currNorm := curr - srcStart
+	return currNorm*dstRange/srcRange + dstStart
 }
 
 // ── Monster Scaling Entry Point ────────────────────────────────────

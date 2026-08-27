@@ -22,12 +22,55 @@ osrs-wiki image "Twisted Bow" --full       # full resolution (1419x1457)
 osrs-wiki image "Twisted Bow" --json       # structured output
 ```
 
-Works with any casing:
+Works with any casing, and follows the wiki's own redirects, so slang resolves:
 ```bash
 osrs-wiki image "twisted bow"     # ✅
 osrs-wiki image "TWISTED BOW"     # ✅
-osrs-wiki image "Torva Platebody" # ✅
+osrs-wiki image "Tbow"            # ✅ → Twisted bow
+osrs-wiki image "Virtus top"      # ✅ → Virtus robe top
 ```
+
+### JSON shapes
+
+With `--json` the answer is always JSON and the exit code is always `0`, so a
+caller branches on `found` rather than on the exit status.
+
+A hit echoes the input alongside the resolved page title:
+
+```json
+{
+  "input": "Tbow",
+  "found": true,
+  "title": "Twisted bow",
+  "image_url": "https://oldschool.runescape.wiki/images/thumb/Twisted_bow_detail.png/150px-...",
+  "full_url": "https://oldschool.runescape.wiki/images/Twisted_bow_detail.png",
+  "width": 150,
+  "height": 154,
+  "page_image": "Twisted_bow_detail.png"
+}
+```
+
+A miss says why, and offers somewhere else to look:
+
+```json
+{
+  "input": "Any Zulrah unique",
+  "found": false,
+  "reason": "not_found",
+  "candidates": [
+    { "title": "Zulrah", "image_url": "https://oldschool.runescape.wiki/images/thumb/.../150px-Zulrah_%28serpentine%29.png" }
+  ]
+}
+```
+
+`reason` is `not_found` when no such page exists, or `no_image` when the page
+is real but carries no artwork. Candidates come from searching the input as
+typed, then with category words like "any", "piece" and "drop" stripped off,
+then on the individual words of what is left; every one is verified to have an
+image before it is offered, at most 5 are returned, best first, and the list
+may be empty. `--size` applies to candidate thumbnails too.
+
+Without `--json` a miss prints the reason to stderr and exits `3`.
 
 ## Prices
 
@@ -105,11 +148,14 @@ Add `--json` to any command:
 ```bash
 osrs-wiki image "Twisted Bow" --json
 # {
+#   "input": "Twisted Bow",
+#   "found": true,
 #   "title": "Twisted bow",
 #   "image_url": "https://oldschool.runescape.wiki/images/thumb/Twisted_bow_detail.png/150px-...",
 #   "full_url": "https://oldschool.runescape.wiki/images/Twisted_bow_detail.png",
 #   "width": 150,
-#   "height": 154
+#   "height": 154,
+#   "page_image": "Twisted_bow_detail.png"
 # }
 ```
 

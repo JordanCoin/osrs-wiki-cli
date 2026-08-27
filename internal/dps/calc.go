@@ -189,7 +189,7 @@ func Calculate(gear GearSet, monster *data.Monster, stats PlayerStats) (*DPSResu
 		return &DPSResult{
 			Weapon: weapon.Name, Style: style, Prayer: prayer.Name,
 			MaxHit: monster.Skills.HP, Accuracy: 100.0,
-			DPS: float64(monster.Skills.HP) / (float64(max(weapon.Speed, 4)) * SecondsPerTick),
+			DPS:      float64(monster.Skills.HP) / (float64(max(weapon.Speed, 4)) * SecondsPerTick),
 			TTKTicks: max(weapon.Speed, 4), TTKString: formatTTK(max(weapon.Speed, 4)),
 			MonsterHP: monster.Skills.HP, AtkSpeed: max(weapon.Speed, 4),
 		}, nil

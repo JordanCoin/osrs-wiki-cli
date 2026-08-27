@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/JordanCoin/osrs-wiki-cli/internal/api"
@@ -15,30 +16,69 @@ var imageCmd = &cobra.Command{
 	Use:   "image [item name]",
 	Short: "Get the correct OSRS Wiki image URL for an item",
 	Long: `Looks up the exact thumbnail URL from the OSRS Wiki MediaWiki API.
-Never guesses filenames — always returns the correct URL that renders.`,
+Never guesses filenames, and follows the wiki's own redirects, so slang like
+"Tbow" or "Virtus top" resolves to the real page.
+
+With --json the answer is always JSON and the exit code is always 0, so a
+caller can branch on the "found" field:
+
+  hit   {"input":"Tbow","found":true,"title":"Twisted bow","image_url":...}
+  miss  {"input":"Barrows piece","found":false,"reason":"not_found",
+         "candidates":[{"title":"Barrows","image_url":...}]}
+
+"reason" is "not_found" when no such page exists, or "no_image" when the page
+is real but carries no artwork. "candidates" holds up to 5 nearby pages that
+do have an image, best first, and may be empty. Without --json a miss prints
+the reason to stderr and exits 3.`,
 	Args: cobra.ExactArgs(1),
 	Example: `  osrs-wiki image "Twisted Bow"
   osrs-wiki image "Scythe of Vitur" --size 200
-  osrs-wiki image "Dragon Claws" --json`,
+  osrs-wiki image "Any Zulrah unique" --json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		size, _ := cmd.Flags().GetInt("size")
 		full, _ := cmd.Flags().GetBool("full")
-		client := api.NewClient()
-		result, err := client.GetImage(args[0], size)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			os.Exit(3)
-		}
-		if jsonOutput {
-			out, _ := json.MarshalIndent(result, "", "  ")
-			fmt.Println(string(out))
-		} else if full {
-			fmt.Println(result.FullURL)
-		} else {
-			fmt.Println(result.ImageURL)
+		code := runImage(api.NewClient(), args[0], size, full, jsonOutput, os.Stdout, os.Stderr)
+		if code != 0 {
+			os.Exit(code)
 		}
 		return nil
 	},
+}
+
+// runImage performs the lookup and writes the answer, returning the process
+// exit code. Split out from the cobra command so the contract (which stream,
+// which exit code, which JSON shape) is testable without spawning a process.
+func runImage(client *api.Client, input string, size int, full, asJSON bool, stdout, stderr io.Writer) int {
+	lookup, err := client.LookupImage(input, size)
+	if err != nil {
+		// A transport failure is a real error even in JSON mode: there is no
+		// answer to serialise.
+		fmt.Fprintf(stderr, "Error: %s\n", err)
+		return 3
+	}
+
+	if asJSON {
+		out, err := json.MarshalIndent(lookup, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: %s\n", err)
+			return 3
+		}
+		fmt.Fprintln(stdout, string(out))
+		// The JSON is the answer, miss included. Exiting non-zero here would
+		// make every caller treat "here are five alternatives" as a crash.
+		return 0
+	}
+
+	if !lookup.Found {
+		fmt.Fprintf(stderr, "Error: %s\n", lookup.Message())
+		return 3
+	}
+	if full {
+		fmt.Fprintln(stdout, lookup.Result.FullURL)
+	} else {
+		fmt.Fprintln(stdout, lookup.Result.ImageURL)
+	}
+	return 0
 }
 
 // ── Price command ────────────────────────────────────────────────────

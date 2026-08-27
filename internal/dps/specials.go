@@ -304,9 +304,9 @@ func ApplyNPCTransform(damage float64, monster *data.Monster, style CombatStyle,
 
 // SpecialAttackMod returns (accuracy multiplier, max hit multiplier) for a weapon's spec.
 type SpecMod struct {
-	AccFactor  Factor // multiplied to attack roll
-	DmgFactor  Factor // multiplied to max hit
-	MultiHits  int    // number of hits (0 = standard single hit)
+	AccFactor Factor // multiplied to attack roll
+	DmgFactor Factor // multiplied to max hit
+	MultiHits int    // number of hits (0 = standard single hit)
 }
 
 // GetSpecialAttackMod returns the spec modifiers for a weapon.

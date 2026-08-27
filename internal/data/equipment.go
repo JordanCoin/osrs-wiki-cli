@@ -9,15 +9,15 @@ import (
 
 // Equipment represents a piece of equipment from the osrs-dps-calc dataset.
 type Equipment struct {
-	Name       string `json:"name"`
-	ID         int    `json:"id"`
-	Version    string `json:"version"`
-	Slot       string `json:"slot"`
-	Image      string `json:"image"`
-	Speed      int    `json:"speed"`
-	Category   string `json:"category"`
-	IsTwoHanded bool  `json:"isTwoHanded"`
-	Bonuses    struct {
+	Name        string `json:"name"`
+	ID          int    `json:"id"`
+	Version     string `json:"version"`
+	Slot        string `json:"slot"`
+	Image       string `json:"image"`
+	Speed       int    `json:"speed"`
+	Category    string `json:"category"`
+	IsTwoHanded bool   `json:"isTwoHanded"`
+	Bonuses     struct {
 		Str       int `json:"str"`
 		RangedStr int `json:"ranged_str"`
 		MagicStr  int `json:"magic_str"`

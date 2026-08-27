@@ -34,8 +34,9 @@ func ScaleToADefenceRoll(defRoll, invocationLevel int) int {
 
 // ScaleCoXHP scales a CoX monster's HP based on party size and CM flag.
 // Formula from ChambersOfXeric.ts:
-//   baseHp * (1 + floor(partySize * 7 / 10 - 1)) for normal
-//   baseHp * (1 + floor(partySize * 7 / 10 - 1)) * 3/2 for CM
+//
+//	baseHp * (1 + floor(partySize * 7 / 10 - 1)) for normal
+//	baseHp * (1 + floor(partySize * 7 / 10 - 1)) * 3/2 for CM
 func ScaleCoXHP(baseHP, partySize int, isCM bool) int {
 	if partySize <= 1 {
 		if isCM {
@@ -55,9 +56,10 @@ func ScaleCoXHP(baseHP, partySize int, isCM bool) int {
 
 // ScaleToBHP scales a ToB monster's HP based on party size.
 // Formula from TheatreOfBlood.ts:
-//   partySize 1-3: HP * 75/100
-//   partySize 4: HP * 875/1000
-//   partySize 5: HP (full)
+//
+//	partySize 1-3: HP * 75/100
+//	partySize 4: HP * 875/1000
+//	partySize 5: HP (full)
 func ScaleToBHP(baseHP, partySize int) int {
 	switch {
 	case partySize <= 3:

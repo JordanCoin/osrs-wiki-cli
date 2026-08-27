@@ -10,45 +10,38 @@ import (
 	"time"
 )
 
+// DefaultBaseURL is the OSRS Wiki MediaWiki endpoint.
+const DefaultBaseURL = "https://oldschool.runescape.wiki/api.php"
+
 type Client struct {
 	HTTPClient *http.Client
+	// BaseURL is the MediaWiki api.php endpoint. Empty means the live wiki;
+	// tests point it at an httptest server.
+	BaseURL string
 }
 
 func NewClient() *Client {
 	return &Client{
 		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+		BaseURL:    DefaultBaseURL,
 	}
+}
+
+func (c *Client) apiBase() string {
+	if c.BaseURL == "" {
+		return DefaultBaseURL
+	}
+	return c.BaseURL
 }
 
 // ImageResult holds the resolved image URL for an item.
 type ImageResult struct {
-	Title        string `json:"title"`
-	ImageURL     string `json:"image_url"`
-	FullURL      string `json:"full_url,omitempty"`
-	Width        int    `json:"width"`
-	Height       int    `json:"height"`
+	Title         string `json:"title"`
+	ImageURL      string `json:"image_url"`
+	FullURL       string `json:"full_url,omitempty"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
 	PageImageName string `json:"page_image,omitempty"`
-}
-
-// GetImage looks up the correct wiki thumbnail URL for an item.
-// Uses the MediaWiki pageimages API — always returns the correct URL.
-func (c *Client) GetImage(itemName string, size int) (*ImageResult, error) {
-	if size <= 0 {
-		size = 150
-	}
-
-	// Try original name first, then wiki-normalized version.
-	// OSRS Wiki uses "Twisted bow" not "Twisted Bow" — only first letter capitalized.
-	// redirects=1 handles some cases but not all.
-	result, err := c.tryGetImage(itemName, size)
-	if err != nil {
-		// Retry with wiki-style capitalization: "Twisted Bow" → "Twisted bow"
-		wikiName := wikiCapitalize(itemName)
-		if wikiName != itemName {
-			result, err = c.tryGetImage(wikiName, size)
-		}
-	}
-	return result, err
 }
 
 // wikiCapitalize converts "Twisted Bow" → "Twisted bow" (only first letter uppercase).
@@ -57,63 +50,6 @@ func wikiCapitalize(name string) string {
 		return name
 	}
 	return strings.ToUpper(name[:1]) + strings.ToLower(name[1:])
-}
-
-func (c *Client) tryGetImage(itemName string, size int) (*ImageResult, error) {
-	apiURL := fmt.Sprintf(
-		"https://oldschool.runescape.wiki/api.php?action=query&titles=%s&prop=pageimages&format=json&pithumbsize=%d&redirects=1",
-		url.QueryEscape(itemName), size,
-	)
-
-	data, err := c.get(apiURL)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Query struct {
-			Pages map[string]struct {
-				Title     string `json:"title"`
-				Thumbnail struct {
-					Source string `json:"source"`
-					Width  int    `json:"width"`
-					Height int    `json:"height"`
-				} `json:"thumbnail"`
-				PageImage string `json:"pageimage"`
-			} `json:"pages"`
-		} `json:"query"`
-	}
-
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("invalid response: %w", err)
-	}
-
-	for _, page := range resp.Query.Pages {
-		if page.Thumbnail.Source != "" {
-			// Build full-size URL by removing the /thumb/ and size prefix
-			fullURL := page.Thumbnail.Source
-			if idx := strings.Index(fullURL, "/thumb/"); idx != -1 {
-				// Remove /thumb/ and the trailing /150px-... part
-				withoutThumb := strings.Replace(fullURL, "/thumb/", "/", 1)
-				if lastSlash := strings.LastIndex(withoutThumb, "/"); lastSlash != -1 {
-					fullURL = withoutThumb[:lastSlash]
-				}
-			}
-
-			return &ImageResult{
-				Title:         page.Title,
-				ImageURL:      page.Thumbnail.Source,
-				FullURL:       fullURL,
-				Width:         page.Thumbnail.Width,
-				Height:        page.Thumbnail.Height,
-				PageImageName: page.PageImage,
-			}, nil
-		}
-		// Page exists but no image
-		return nil, fmt.Errorf("no image found for '%s'. The wiki page exists but has no thumbnail", itemName)
-	}
-
-	return nil, fmt.Errorf("item '%s' not found on the OSRS Wiki. Check the spelling or try 'osrs-wiki search %s'", itemName, itemName)
 }
 
 // SearchResult holds an item from opensearch.
@@ -128,8 +64,8 @@ func (c *Client) Search(query string, limit int) ([]SearchResult, error) {
 		limit = 10
 	}
 	apiURL := fmt.Sprintf(
-		"https://oldschool.runescape.wiki/api.php?action=opensearch&search=%s&limit=%d&format=json",
-		url.QueryEscape(query), limit,
+		"%s?action=opensearch&search=%s&limit=%d&format=json",
+		c.apiBase(), url.QueryEscape(query), limit,
 	)
 
 	data, err := c.get(apiURL)
@@ -292,8 +228,8 @@ func (c *Client) GetPage(title string, maxChars int) (*PageContent, error) {
 	}
 
 	apiURL := fmt.Sprintf(
-		"https://oldschool.runescape.wiki/api.php?action=query&titles=%s&prop=extracts&format=json&redirects=1&exchars=%d&explaintext=1",
-		url.QueryEscape(title), maxChars,
+		"%s?action=query&titles=%s&prop=extracts&format=json&redirects=1&exchars=%d&explaintext=1",
+		c.apiBase(), url.QueryEscape(title), maxChars,
 	)
 
 	data, err := c.get(apiURL)
@@ -337,8 +273,8 @@ func (c *Client) GetPage(title string, maxChars int) (*PageContent, error) {
 
 func (c *Client) getPageDirect(title string, maxChars int) (*PageContent, error) {
 	apiURL := fmt.Sprintf(
-		"https://oldschool.runescape.wiki/api.php?action=query&titles=%s&prop=extracts&format=json&redirects=1&exchars=%d&explaintext=1",
-		url.QueryEscape(title), maxChars,
+		"%s?action=query&titles=%s&prop=extracts&format=json&redirects=1&exchars=%d&explaintext=1",
+		c.apiBase(), url.QueryEscape(title), maxChars,
 	)
 	data, err := c.get(apiURL)
 	if err != nil {

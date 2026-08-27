@@ -4,25 +4,25 @@ import "sort"
 
 // GearSet defines equipment for all slots.
 type GearSet struct {
-	Name         string
-	Style        string // melee, ranged, magic
-	Head         string
-	Cape         string
-	Neck         string
-	Ammo         string
-	Weapon       string
-	Body         string
-	Shield       string
-	Legs         string
-	Hands        string
-	Feet         string
-	Ring         string
-	UseSpec          bool   // whether to calculate using special attack
-	Spell            string // spell name for manual casting
-	ChargeSpell      bool   // whether Charge spell is active (god spells)
-	SunfireRunes     bool   // whether using sunfire runes
-	MarkOfDarkness   bool   // whether Mark of Darkness is active
-	ToAInvocation    int    // ToA invocation level (0-600, 0 = no scaling)
+	Name           string
+	Style          string // melee, ranged, magic
+	Head           string
+	Cape           string
+	Neck           string
+	Ammo           string
+	Weapon         string
+	Body           string
+	Shield         string
+	Legs           string
+	Hands          string
+	Feet           string
+	Ring           string
+	UseSpec        bool   // whether to calculate using special attack
+	Spell          string // spell name for manual casting
+	ChargeSpell    bool   // whether Charge spell is active (god spells)
+	SunfireRunes   bool   // whether using sunfire runes
+	MarkOfDarkness bool   // whether Mark of Darkness is active
+	ToAInvocation  int    // ToA invocation level (0-600, 0 = no scaling)
 }
 
 // GearSlots returns a map of slot name to item name for iteration.
